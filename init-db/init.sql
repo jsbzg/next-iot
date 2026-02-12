@@ -10,8 +10,8 @@ CREATE TABLE IF NOT EXISTS thing_model (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
     model_code VARCHAR(50) NOT NULL UNIQUE COMMENT '模型编码',
     model_name VARCHAR(100) NOT NULL COMMENT '模型名称',
-    created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
-    updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) ON UPDATE CURRENT_TIMESTAMP * 1000 COMMENT '更新时间',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
+    updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     INDEX idx_model_code (model_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='物模型表';
 
@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS thing_property (
     property_name VARCHAR(100) NOT NULL COMMENT '点位名称',
     data_type VARCHAR(20) NOT NULL COMMENT '数据类型：int/double/string/bool',
     unit VARCHAR(20) COMMENT '单位',
-    created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
-    updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) ON UPDATE CURRENT_TIMESTAMP * 1000 COMMENT '更新时间',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
+    updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     UNIQUE KEY uk_model_property (model_code, property_code),
     INDEX idx_model_code (model_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='点位定义表';
@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS thing_device (
     device_name VARCHAR(100) COMMENT '设备名称',
     online TINYINT(1) DEFAULT 1 COMMENT '在线状态：0-离线 1-在线',
     last_seen_ts BIGINT DEFAULT 0 COMMENT '最后上报时间戳',
-    created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
-    updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) ON UPDATE CURRENT_TIMESTAMP * 1000 COMMENT '更新时间',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
+    updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     INDEX idx_device_code (device_code),
     INDEX idx_model_code (model_code),
     INDEX idx_gateway_type (gateway_type)
@@ -55,8 +55,8 @@ CREATE TABLE IF NOT EXISTS parse_rule (
     mapping_script TEXT COMMENT '映射脚本（Aviator 脚本）',
     version INT NOT NULL DEFAULT 1 COMMENT '版本号',
     enabled TINYINT(1) DEFAULT 1 COMMENT '是否启用：0-禁用 1-启用',
-    created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
-    updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) ON UPDATE CURRENT_TIMESTAMP * 1000 COMMENT '更新时间',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
+    updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     INDEX idx_gateway_type (gateway_type),
     INDEX idx_version (version)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='解析规则表';
@@ -75,8 +75,8 @@ CREATE TABLE IF NOT EXISTS alarm_rule (
     level INT NOT NULL DEFAULT 1 COMMENT '告警级别：0-提示 1-警告 2-严重 3-紧急',
     description VARCHAR(255) COMMENT '告警描述',
     enabled TINYINT(1) DEFAULT 1 COMMENT '是否启用：0-禁用 1-启用',
-    created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
-    updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) ON UPDATE CURRENT_TIMESTAMP * 1000 COMMENT '更新时间',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
+    updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     INDEX idx_rule_code (rule_code),
     INDEX idx_device_code (device_code),
     INDEX idx_property_code (property_code)
@@ -88,8 +88,8 @@ CREATE TABLE IF NOT EXISTS offline_rule (
     device_code VARCHAR(50) NOT NULL UNIQUE COMMENT '设备编码',
     timeout_seconds INT NOT NULL DEFAULT 300 COMMENT '超时时长（秒）',
     enabled TINYINT(1) DEFAULT 1 COMMENT '是否启用：0-禁用 1-启用',
-    created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
-    updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) ON UPDATE CURRENT_TIMESTAMP * 1000 COMMENT '更新时间',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
+    updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     INDEX idx_device_code (device_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线规则表';
 
@@ -107,17 +107,13 @@ CREATE TABLE IF NOT EXISTS alarm_instance (
     ack_time BIGINT COMMENT '确认时间',
     recovered_time BIGINT COMMENT '恢复时间',
     ack_user VARCHAR(50) COMMENT '确认用户',
-    created_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) COMMENT '创建时间',
-    updated_at BIGINT NOT NULL DEFAULT (UNIX_TIMESTAMP() * 1000) ON UPDATE CURRENT_TIMESTAMP * 1000 COMMENT '更新时间',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
+    updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     INDEX idx_rule_code (rule_code),
     INDEX idx_device_code (device_code),
     INDEX idx_status (status),
     INDEX idx_last_trigger (last_trigger_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='告警实例表';
-
--- 添加外键约束
-ALTER TABLE thing_property ADD CONSTRAINT fk_property_model FOREIGN KEY (model_code) REFERENCES thing_model(model_code) ON DELETE CASCADE;
-ALTER TABLE thing_device ADD CONSTRAINT fk_device_model FOREIGN KEY (model_code) REFERENCES thing_model(model_code) ON DELETE CASCADE;
 
 -- ===== 初始化示例数据 =====
 

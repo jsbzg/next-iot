@@ -37,6 +37,6 @@ public class JsonUtil {
      * @return 格式化后的 JSON 字符串
      */
     public static String formatJson(String json) {
-        return JSON.toJSONString(JSON.parseObject(json), true);
+        return JSON.toJSONString(JSON.parseObject(json));
     }
 }

@@ -32,7 +32,7 @@ public class AlarmRule {
     /**
      * 触发类型：连续N次 / 时间窗口
      */
-    private TriggerType triggerType;
+    private String triggerType;
     /**
      * 触发参数N值（连续N次 或 窗口内次数）
      */
@@ -48,7 +48,7 @@ public class AlarmRule {
     /**
      * 告警级别
      */
-    private AlarmLevel level;
+    private Integer level;
     /**
      * 告警描述
      */

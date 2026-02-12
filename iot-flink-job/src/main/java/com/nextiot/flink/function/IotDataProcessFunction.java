@@ -8,6 +8,7 @@ import com.nextiot.common.enums.ConfigOpType;
 import com.nextiot.common.enums.TriggerType;
 import com.nextiot.common.util.AviatorUtil;
 import com.nextiot.flink.state.BroadcastStateKeys;
+import org.apache.flink.api.common.state.ReadOnlyBroadcastState;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;

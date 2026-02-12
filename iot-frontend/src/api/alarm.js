@@ -7,7 +7,7 @@ export const alarmApi = {
   // 查询所有告警
   getList(params = {}) {
     return request({
-      url: '/alarm/list',
+      url: '/api/alarm/list',
       method: 'get',
       params
     })
@@ -16,7 +16,7 @@ export const alarmApi = {
   // 查询单个告警详情
   getById(id) {
     return request({
-      url: `/alarm/${id}`,
+      url: `/api/alarm/${id}`,
       method: 'get'
     })
   },
@@ -24,7 +24,7 @@ export const alarmApi = {
   // 确认告警
   ack(id, user = 'admin') {
     return request({
-      url: `/alarm/${id}/ack`,
+      url: `/api/alarm/${id}/ack`,
       method: 'post',
       params: { user }
     })
@@ -33,7 +33,7 @@ export const alarmApi = {
   // 恢复告警
   recover(ruleCode, deviceCode) {
     return request({
-      url: '/alarm/recover',
+      url: '/api/alarm/recover',
       method: 'post',
       params: { ruleCode, deviceCode }
     })

@@ -4,6 +4,7 @@ import com.googlecode.aviator.AviatorEvaluator;
 import com.googlecode.aviator.Expression;
 
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Aviator 表达式引擎工具类
@@ -11,11 +12,8 @@ import java.util.Map;
  */
 public class AviatorUtil {
 
-    static {
-        // 初始化 Aviator 引擎
-        AviatorEvaluator.setCachedExpression(true);
-        AviatorEvaluator.setOptimize(AviatorEvaluator.EVAL);
-    }
+    // 编译缓存
+    private static final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
 
     /**
      * 计算布尔表达式（用于规则匹配）
@@ -28,7 +26,7 @@ public class AviatorUtil {
             return false;
         }
         try {
-            Expression compiled = AviatorEvaluator.compile(expression);
+            Expression compiled = compileExpression(expression);
             Object result = compiled.execute(env);
             return result != null && Boolean.TRUE.equals(result) || matchesNumericResult(result);
         } catch (Exception e) {
@@ -47,7 +45,7 @@ public class AviatorUtil {
             return null;
         }
         try {
-            Expression compiled = AviatorEvaluator.compile(expression);
+            Expression compiled = compileExpression(expression);
             return compiled.execute(env);
         } catch (Exception e) {
             return null;
@@ -55,10 +53,19 @@ public class AviatorUtil {
     }
 
     /**
-     * 打印编译缓存统计信息（用于性能监控）
+     * 编译表达式（带缓存）
+     */
+    private static Expression compileExpression(String expression) {
+        return expressionCache.computeIfAbsent(expression, expr ->
+            AviatorEvaluator.compile(expr)
+        );
+    }
+
+    /**
+     * 打印缓存统计信息（用于性能监控）
      */
     public static void printCacheStats() {
-        // 可扩展用于监控表达式编译缓存命中情况
+        System.out.println("Aviator 表达式缓存数量: " + expressionCache.size());
     }
 
     /**

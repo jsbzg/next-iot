@@ -39,11 +39,10 @@
             <artifactId>flink-clients</artifactId>
         </dependency>
 
-        <!-- Flink Kafka 连接器 -->
+        <!-- Flink Kafka 连接器 (版本号格式: ${connector.version}-${flink.version}) -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
-            <version>${flink.version}</version>
         </dependency>
 
         <!-- Aviator 表达式引擎 -->

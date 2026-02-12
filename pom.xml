@@ -34,6 +34,7 @@
         <!-- 依赖版本管理 -->
         <spring.boot.version>3.2.0</spring.boot.version>
         <flink.version>1.18.1</flink.version>
+        <flink.kafka.version>3.1.0-1.18</flink.kafka.version>
         <mysql.connector.version>8.0.33</mysql.connector.version>
         <kafka.client.version>3.6.0</kafka.client.version>
         <aviator.version>5.3.3</aviator.version>
@@ -74,7 +75,7 @@
             <dependency>
                 <groupId>org.apache.flink</groupId>
                 <artifactId>flink-connector-kafka</artifactId>
-                <version>${flink.version}</version>
+                <version>${flink.kafka.version}</version>
             </dependency>
 
             <!-- Aviator 表达式引擎 -->

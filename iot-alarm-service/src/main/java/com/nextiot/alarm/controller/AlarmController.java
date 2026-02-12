@@ -24,7 +24,7 @@ public class AlarmController {
      * 查询所有告警
      */
     @GetMapping("/list")
-    public Result<List<AlarmInstance>> list(@RequestParam(required = false) String status) {
+    public Result<List<AlarmInstance>> list(@RequestParam(name = "status",required = false) String status) {
         LambdaQueryWrapper<AlarmInstance> wrapper = new LambdaQueryWrapper<>();
         if (status != null && !status.isEmpty()) {
             wrapper.eq(AlarmInstance::getStatus, status);

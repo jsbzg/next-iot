@@ -47,11 +47,14 @@ public class ConfigEventProducer {
 
             // 发送到 Kafka config-topic
             kafkaTemplate.send(configTopic, type.getCode(), json)
-                    .addCallback(
-                            result -> log.info("配置变更事件发送成功: type={}, op={}", type, op),
-                            failure -> log.error("配置变更事件发送失败: type={}, op={}, error={}",
-                                    type, op, failure.getMessage())
-                    );
+                    .whenComplete((result, failure) -> {
+                        if (failure == null) {
+                            log.info("配置变更事件发送成功: type={}, op={}", type, op);
+                        } else {
+                            log.error("配置变更事件发送失败: type={}, op={}, error={}",
+                                    type, op, failure.getMessage());
+                        }
+                    });
         } catch (Exception e) {
             log.error("发送配置变更事件异常: type={}, op={}, error={}", type, op, e.getMessage(), e);
             throw new RuntimeException("发送配置变更事件失败", e);

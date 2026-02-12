@@ -4,7 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.nextiot.alarm.mapper.AlarmInstanceMapper;
 import com.nextiot.alarm.service.AlarmService;
-import com.nextiot.common.dto.Result;
+import com.nextiot.common.entity.AlarmInstance;
 import jakarta.annotation.Resource;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
