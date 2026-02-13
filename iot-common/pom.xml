@@ -7,14 +7,14 @@
 
     <parent>
         <groupId>com.nextiot</groupId>
-        <artifactId>iot-data-platform</artifactId>
+        <artifactId>next-iot-platform</artifactId>
         <version>1.0.0</version>
     </parent>
 
     <artifactId>iot-common</artifactId>
     <packaging>jar</packaging>
 
-    <name>IoT 公共模块</name>
+    <name>iot-common</name>
     <description>公共模型和工具类</description>
 
     <dependencies>
@@ -34,6 +34,11 @@
         <dependency>
             <groupId>com.googlecode.aviator</groupId>
             <artifactId>aviator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
         </dependency>
     </dependencies>
 </project>

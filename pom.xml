@@ -7,12 +7,12 @@
 
     <!-- 项目信息 -->
     <groupId>com.nextiot</groupId>
-    <artifactId>iot-data-platform</artifactId>
+    <artifactId>next-iot-platform</artifactId>
     <version>1.0.0</version>
     <packaging>pom</packaging>
 
     <!-- 项目名称和描述 -->
-    <name>IoT 数据中台</name>
+    <name>next-iot-platform</name>
     <description>基于 Flink + Kafka 的物联网数据中台 Demo</description>
 
     <!-- 子模块 -->

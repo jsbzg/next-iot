@@ -7,14 +7,14 @@
 
     <parent>
         <groupId>com.nextiot</groupId>
-        <artifactId>iot-data-platform</artifactId>
+        <artifactId>next-iot-platform</artifactId>
         <version>1.0.0</version>
     </parent>
 
     <artifactId>iot-alarm-service</artifactId>
     <packaging>jar</packaging>
 
-    <name>IoT 告警服务</name>
+    <name>iot-alarm</name>
     <description>告警服务 - 处理业务抑制、生命周期管理、通知编排</description>
 
     <dependencies>

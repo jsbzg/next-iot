@@ -37,7 +37,10 @@ spring:
       auto-offset-reset: earliest
       enable-auto-commit: false
     listener:
-      ack-mode: manual-immediate
+      ack-mode: manual_immediate
+      type: batch # 开启批量消费
+    properties:
+      metric-topic: metric-topic # 自定义配置
 
 # MyBatis Plus 配置
 mybatis-plus:
@@ -54,3 +57,7 @@ mybatis-plus:
 logging:
   level:
     com.nextiot: debug
+
+# 自定义业务配置
+iot:
+  metric-topic: metric-topic

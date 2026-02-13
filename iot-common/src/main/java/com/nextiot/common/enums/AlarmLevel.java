@@ -36,4 +36,16 @@ public enum AlarmLevel {
     public String getDesc() {
         return desc;
     }
+
+    /**
+     * 根据整数级别获取枚举
+     */
+    public static AlarmLevel fromLevel(int level) {
+        for (AlarmLevel al : values()) {
+            if (al.level == level) {
+                return al;
+            }
+        }
+        return WARNING; // 默认返回 WARNING
+    }
 }

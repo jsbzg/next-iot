@@ -3,6 +3,9 @@ package com.nextiot.common.util;
 import com.googlecode.aviator.AviatorEvaluator;
 import com.googlecode.aviator.Expression;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -11,6 +14,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 用于动态解析报文和规则检测
  */
 public class AviatorUtil {
+
+    private static final Logger log = LoggerFactory.getLogger(AviatorUtil.class);
 
     // 编译缓存
     private static final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
@@ -30,6 +35,7 @@ public class AviatorUtil {
             Object result = compiled.execute(env);
             return result != null && Boolean.TRUE.equals(result) || matchesNumericResult(result);
         } catch (Exception e) {
+            log.error("[AVIATOR-ERROR] Expression execution failed: {}, env: {}, error: ", expression, env, e);
             return false;
         }
     }

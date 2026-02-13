@@ -7,14 +7,14 @@
 
     <parent>
         <groupId>com.nextiot</groupId>
-        <artifactId>iot-data-platform</artifactId>
+        <artifactId>next-iot-platform</artifactId>
         <version>1.0.0</version>
     </parent>
 
     <artifactId>iot-config-service</artifactId>
     <packaging>jar</packaging>
 
-    <name>IoT 配置管理服务</name>
+    <name>iot-config</name>
     <description>配置管理服务和后台管理 API</description>
 
     <dependencies>

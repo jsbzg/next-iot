@@ -2,8 +2,8 @@ package com.nextiot.config.controller;
 
 import com.nextiot.common.entity.ThingModel;
 import com.nextiot.common.entity.ThingProperty;
-import com.nextiot.config.mapper.ThingModelMapper;
 import com.nextiot.config.mapper.ThingPropertyMapper;
+import com.nextiot.config.service.ThingModelService;
 import com.nextiot.common.dto.Result;
 import jakarta.annotation.Resource;
 import org.springframework.web.bind.annotation.*;
@@ -19,7 +19,7 @@ import java.util.List;
 public class ThingModelController {
 
     @Resource
-    private ThingModelMapper thingModelMapper;
+    private ThingModelService thingModelService;
 
     @Resource
     private ThingPropertyMapper thingPropertyMapper;
@@ -29,7 +29,7 @@ public class ThingModelController {
      */
     @GetMapping("/list")
     public Result<List<ThingModel>> listModels() {
-        List<ThingModel> models = thingModelMapper.selectList(null);
+        List<ThingModel> models = thingModelService.getAllModels();
         return Result.success(models);
     }
 
@@ -39,10 +39,8 @@ public class ThingModelController {
     @PostMapping("/create")
     public Result<ThingModel> createModel(@RequestBody ThingModel model) {
         try {
-            model.setCreatedAt(System.currentTimeMillis());
-            model.setUpdatedAt(System.currentTimeMillis());
-            thingModelMapper.insert(model);
-            return Result.success(model);
+            ThingModel created = thingModelService.createThingModel(model);
+            return Result.success(created);
         } catch (Exception e) {
             return Result.fail("创建物模型失败：" + e.getMessage());
         }
@@ -54,9 +52,8 @@ public class ThingModelController {
     @PostMapping("/update")
     public Result<ThingModel> updateModel(@RequestBody ThingModel model) {
         try {
-            model.setUpdatedAt(System.currentTimeMillis());
-            thingModelMapper.updateById(model);
-            return Result.success(model);
+            ThingModel updated = thingModelService.updateThingModel(model);
+            return Result.success(updated);
         } catch (Exception e) {
             return Result.fail("更新物模型失败：" + e.getMessage());
         }
@@ -68,12 +65,7 @@ public class ThingModelController {
     @DeleteMapping("/{modelCode}")
     public Result<Void> deleteModel(@PathVariable String modelCode) {
         try {
-            ThingModel model = thingModelMapper.selectOne(
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ThingModel>()
-                            .eq(ThingModel::getModelCode, modelCode));
-            if (model != null) {
-                thingModelMapper.deleteById(model.getId());
-            }
+            thingModelService.deleteThingModel(modelCode);
             return Result.success();
         } catch (Exception e) {
             return Result.fail("删除物模型失败：" + e.getMessage());

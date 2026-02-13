@@ -44,18 +44,19 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100">
+        <el-table-column label="操作" width="160">
           <template #default="{ row }">
+            <el-button type="primary" link :icon="Edit" @click="handleEdit(row)">编辑</el-button>
             <el-button type="danger" link :icon="Delete" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
-    <!-- 新增告警规则对话框 -->
+    <!-- 新增/编辑告警规则对话框 -->
     <el-dialog
       v-model="dialogVisible"
-      title="新增告警规则"
+      :title="dialogTitle"
       width="700px"
       :close-on-click-modal="false"
     >
@@ -66,7 +67,7 @@
         label-width="140px"
       >
         <el-form-item label="规则编码" prop="ruleCode">
-          <el-input v-model="ruleForm.ruleCode" placeholder="如: TEMP_HIGH_3" />
+          <el-input v-model="ruleForm.ruleCode" placeholder="如: TEMP_HIGH_3" :disabled="!!ruleForm.id" />
         </el-form-item>
         <el-form-item label="设备编码" prop="deviceCode">
           <el-input v-model="ruleForm.deviceCode" placeholder="留空表示按模型配置" clearable>
@@ -87,7 +88,7 @@
           </template>
         </el-form-item>
         <el-form-item label="触发类型" prop="triggerType">
-          <el-select v-model="triggerType" placeholder="请选择触发类型" style="width: 100%" @change="handleTriggerTypeChange">
+          <el-select v-model="ruleForm.triggerType" placeholder="请选择触发类型" style="width: 100%">
             <el-option label="连续N次" value="CONTINUOUS_N" />
             <el-option label="时间窗口" value="WINDOW" />
           </el-select>
@@ -101,7 +102,7 @@
             style="width: 100%"
           />
         </el-form-item>
-        <el-form-item v-if="triggerType === 'WINDOW'" label="窗口大小（秒）" prop="windowSeconds">
+        <el-form-item v-if="ruleForm.triggerType === 'WINDOW'" label="窗口大小（秒）" prop="windowSeconds">
           <el-input-number
             v-model="ruleForm.windowSeconds"
             :min="1"
@@ -144,7 +145,7 @@
 <script setup>
 import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete, QuestionFilled } from '@element-plus/icons-vue'
+import { Plus, Delete, Edit, QuestionFilled } from '@element-plus/icons-vue'
 import { alarmRuleApi } from '@/api/alarmRule'
 
 // 表格数据
@@ -153,14 +154,13 @@ const loading = ref(false)
 
 // 对话框状态
 const dialogVisible = ref(false)
+const dialogTitle = ref('新增告警规则')
 const submitting = ref(false)
-
-// 触发类型（本地状态，不绑定到 ruleForm）
-const triggerType = ref('CONTINUOUS_N')
 
 // 表单数据
 const ruleFormRef = ref(null)
 const ruleForm = reactive({
+  id: null,
   ruleCode: '',
   deviceCode: '',
   propertyCode: 'temperature',
@@ -200,11 +200,6 @@ const loadAlarmRules = async () => {
   }
 }
 
-// 触发类型变化
-const handleTriggerTypeChange = () => {
-  ruleForm.triggerType = triggerType.value
-}
-
 // 获取触发类型名称
 const getTriggerTypeName = (type) => {
   const map = {
@@ -229,6 +224,7 @@ const getLevelTag = (level) => {
 // 新增
 const handleAdd = () => {
   Object.assign(ruleForm, {
+    id: null,
     ruleCode: `RULE_${Date.now()}`,
     deviceCode: '',
     propertyCode: 'temperature',
@@ -241,7 +237,14 @@ const handleAdd = () => {
     description: '温度连续N次超过阈值',
     enabled: true
   })
-  triggerType.value = 'CONTINUOUS_N'
+  dialogTitle.value = '新增告警规则'
+  dialogVisible.value = true
+}
+
+// 编辑
+const handleEdit = (row) => {
+  Object.assign(ruleForm, row)
+  dialogTitle.value = '编辑告警规则'
   dialogVisible.value = true
 }
 
@@ -266,10 +269,13 @@ const handleSubmit = async () => {
 
     submitting.value = true
     try {
-      // 同步 triggerType 到 ruleForm
-      ruleForm.triggerType = triggerType.value
-      await alarmRuleApi.create(ruleForm)
-      ElMessage.success('添加成功，规则已通过 Kafka 动态下发到 Flink')
+      if (ruleForm.id) {
+        await alarmRuleApi.update(ruleForm)
+        ElMessage.success('更新成功，规则已实时同步到 Flink')
+      } else {
+        await alarmRuleApi.create(ruleForm)
+        ElMessage.success('添加成功，规则已实时同步到 Flink')
+      }
       dialogVisible.value = false
       loadAlarmRules()
     } catch (error) {

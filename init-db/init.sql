@@ -115,6 +115,19 @@ CREATE TABLE IF NOT EXISTS alarm_instance (
     INDEX idx_last_trigger (last_trigger_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='告警实例表';
 
+-- ===== 设备数据表 =====
+CREATE TABLE IF NOT EXISTS device_metric_data (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    device_code VARCHAR(50) NOT NULL COMMENT '设备编码',
+    property_code VARCHAR(50) NOT NULL COMMENT '点位编码',
+    value DOUBLE COMMENT '数值型值',
+    str_value VARCHAR(255) COMMENT '字符串值',
+    ts BIGINT NOT NULL COMMENT '上报时间戳',
+    created_at BIGINT NOT NULL DEFAULT 0 COMMENT '入库时间',
+    INDEX idx_device_ts (device_code, ts),
+    INDEX idx_ts (ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='设备数据表（时序数据）';
+
 -- ===== 初始化示例数据 =====
 
 -- 物模型示例：温湿度传感器
@@ -135,7 +148,10 @@ INSERT INTO thing_device (device_code, model_code, gateway_type, device_name, on
 
 -- 解析规则示例：MQTT 协议报文格式：{"deviceCode":"dev_001","temperature":25.5,humidity":60.2,"pressure":1013.2,"ts":1690000000}
 INSERT INTO parse_rule (gateway_type, protocol_type, match_expr, parse_script, mapping_script, version, enabled) VALUES
-('MQTT', 'mqtt', "string.contains(raw, 'deviceCode')", NULL, '{"deviceCode":raw.deviceCode}', 1, 1);
+('MQTT', 'mqtt', 'deviceCode != nil', 
+'let m = seq.map(); m.deviceCode = raw.deviceCode; m.ts = raw.ts; m.temperature = raw.temperature; m.humidity = raw.humidity; m.pressure = raw.pressure; return m;', 
+'let out = seq.map(); out.deviceCode = parsed.deviceCode; out.ts = parsed.ts; if(parsed.temperature!=nil){ out.propertyCode=''temperature''; out.value=parsed.temperature; }elsif(parsed.humidity!=nil){ out.propertyCode=''humidity''; out.value=parsed.humidity; }elsif(parsed.pressure!=nil){ out.propertyCode=''pressure''; out.value=parsed.pressure; } return out;', 
+2, 1);
 
 -- 告警规则示例
 INSERT INTO alarm_rule (rule_code, device_code, property_code, condition_expr, trigger_type, trigger_n, window_seconds, suppress_seconds, level, description, enabled) VALUES

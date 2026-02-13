@@ -26,18 +26,19 @@
             {{ formatDate(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100">
+        <el-table-column label="操作" width="160">
           <template #default="{ row }">
+            <el-button type="primary" link :icon="Edit" @click="handleEdit(row)">编辑</el-button>
             <el-button type="danger" link :icon="Delete" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
-    <!-- 新增离线规则对话框 -->
+    <!-- 新增/编辑离线规则对话框 -->
     <el-dialog
       v-model="dialogVisible"
-      title="新增离线规则"
+      :title="dialogTitle"
       width="500px"
       :close-on-click-modal="false"
     >
@@ -48,7 +49,7 @@
         label-width="140px"
       >
         <el-form-item label="设备编码" prop="deviceCode">
-          <el-input v-model="ruleForm.deviceCode" placeholder="如: dev_001" />
+          <el-input v-model="ruleForm.deviceCode" placeholder="如: dev_001" :disabled="!!ruleForm.id" />
         </el-form-item>
         <el-form-item label="超时时长（秒）" prop="timeoutSeconds">
           <el-input-number
@@ -83,7 +84,7 @@
 <script setup>
 import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete } from '@element-plus/icons-vue'
+import { Plus, Delete, Edit } from '@element-plus/icons-vue'
 import { offlineRuleApi } from '@/api/offlineRule'
 import dayjs from 'dayjs'
 
@@ -93,11 +94,13 @@ const loading = ref(false)
 
 // 对话框状态
 const dialogVisible = ref(false)
+const dialogTitle = ref('新增离线规则')
 const submitting = ref(false)
 
 // 表单数据
 const ruleFormRef = ref(null)
 const ruleForm = reactive({
+  id: null,
   deviceCode: '',
   timeoutSeconds: 300,
   enabled: true
@@ -127,10 +130,19 @@ const loadOfflineRules = async () => {
 // 新增
 const handleAdd = () => {
   Object.assign(ruleForm, {
+    id: null,
     deviceCode: '',
     timeoutSeconds: 300,
     enabled: true
   })
+  dialogTitle.value = '新增离线规则'
+  dialogVisible.value = true
+}
+
+// 编辑
+const handleEdit = (row) => {
+  Object.assign(ruleForm, row)
+  dialogTitle.value = '编辑离线规则'
   dialogVisible.value = true
 }
 
@@ -155,8 +167,13 @@ const handleSubmit = async () => {
 
     submitting.value = true
     try {
-      await offlineRuleApi.create(ruleForm)
-      ElMessage.success('添加成功，规则已通过 Kafka 动态下发到 Flink')
+      if (ruleForm.id) {
+        await offlineRuleApi.update(ruleForm)
+        ElMessage.success('更新成功，规则已实时同步到 Flink')
+      } else {
+        await offlineRuleApi.create(ruleForm)
+        ElMessage.success('添加成功，规则已实时同步到 Flink')
+      }
       dialogVisible.value = false
       loadOfflineRules()
     } catch (error) {

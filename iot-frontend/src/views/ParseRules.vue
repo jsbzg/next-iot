@@ -24,8 +24,9 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100">
+        <el-table-column label="操作" width="160">
           <template #default="{ row }">
+            <el-button type="primary" link :icon="Edit" @click="handleEdit(row)">编辑</el-button>
             <el-button type="danger" link :icon="Delete" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -46,7 +47,7 @@
         label-width="120px"
       >
         <el-form-item label="网关类型" prop="gatewayType">
-          <el-input v-model="ruleForm.gatewayType" placeholder="如: MQTT" />
+          <el-input v-model="ruleForm.gatewayType" placeholder="如: MQTT" :disabled="!!ruleForm.id" />
         </el-form-item>
         <el-form-item label="协议类型" prop="protocolType">
           <el-select v-model="ruleForm.protocolType" placeholder="请选择协议类型" style="width: 100%">
@@ -57,7 +58,7 @@
         </el-form-item>
         <el-form-item label="匹配表达式" prop="matchExpr">
           <el-tooltip content="Aviator 表达式，用于判断是否命中该规则" placement="top">
-            <el-input v-model="ruleForm.matchExpr" placeholder='如: string.contains(raw, "deviceCode")' />
+            <el-input v-model="ruleForm.matchExpr" placeholder='如: deviceCode != nil' />
           </el-tooltip>
         </el-form-item>
         <el-form-item label="解析脚本" prop="parseScript">
@@ -93,11 +94,10 @@
         >
           <template #default>
             <div class="aviator-tips">
-              <p>• 字符串匹配: <code>string.contains(raw, "keyword")</code></p>
+              <p>• 存在判断: <code>deviceCode != nil</code></p>
+              <p>• 字符串匹配: <code>string.contains(raw.some_key, "keyword")</code></p>
               <p>• 数值比较: <code>value > 80</code></p>
-              <p>• 逻辑运算: <code>value > 80 && value < 100</code></p>
-              <p>• JSON 取值: <code>raw.deviceCode</code></p>
-              <p>• 更多语法: <a href="https://github.com/killme2008/aviator" target="_blank">Aviator 官方文档</a></p>
+              <p>• JSON 取值: <code>raw.deviceCode</code> 或直接 <code>deviceCode</code></p>
             </div>
           </template>
         </el-alert>
@@ -113,7 +113,7 @@
 <script setup>
 import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Delete } from '@element-plus/icons-vue'
+import { Plus, Delete, Edit } from '@element-plus/icons-vue'
 import { parseRuleApi } from '@/api/parseRule'
 
 // 表格数据
@@ -128,12 +128,14 @@ const submitting = ref(false)
 // 表单数据
 const ruleFormRef = ref(null)
 const ruleForm = reactive({
+  id: null,
   gatewayType: 'MQTT',
   protocolType: 'mqtt',
-  matchExpr: 'string.contains(raw, "deviceCode")',
+  matchExpr: 'deviceCode != nil',
   parseScript: '',
   mappingScript: '{"deviceCode": raw.deviceCode}',
-  enabled: true
+  enabled: true,
+  version: 0
 })
 
 // 验证规则
@@ -161,14 +163,23 @@ const loadParseRules = async () => {
 // 新增
 const handleAdd = () => {
   Object.assign(ruleForm, {
+    id: null,
     gatewayType: 'MQTT',
     protocolType: 'mqtt',
-    matchExpr: 'string.contains(raw, "deviceCode")',
+    matchExpr: 'deviceCode != nil',
     parseScript: '',
     mappingScript: '{"deviceCode": raw.deviceCode}',
-    enabled: true
+    enabled: true,
+    version: 0
   })
   dialogTitle.value = '新增解析规则'
+  dialogVisible.value = true
+}
+
+// 编辑
+const handleEdit = (row) => {
+  Object.assign(ruleForm, row)
+  dialogTitle.value = '编辑解析规则'
   dialogVisible.value = true
 }
 
@@ -193,8 +204,16 @@ const handleSubmit = async () => {
 
     submitting.value = true
     try {
-      await parseRuleApi.create(ruleForm)
-      ElMessage.success('添加成功，规则已通过 Kafka 动态下发到 Flink')
+      if (ruleForm.id) {
+        // 编辑模式：版本号自动在后端递增（或前端传递，取决于实现偏好，Impl中实现是Create递增）
+        // 实际上后端 Update 实现没有自动递增版本，为了确保 Flink 更新，我们在前端手动递增版本
+        const updateData = { ...ruleForm, version: (ruleForm.version || 0) + 1 }
+        await parseRuleApi.update(updateData)
+        ElMessage.success('更新成功，规则版本已升至 v' + updateData.version + ' 并同步到 Flink')
+      } else {
+        await parseRuleApi.create(ruleForm)
+        ElMessage.success('添加成功，规则已同步到 Flink')
+      }
       dialogVisible.value = false
       loadParseRules()
     } catch (error) {

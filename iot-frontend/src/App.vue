@@ -40,6 +40,10 @@
           <el-icon><Bell /></el-icon>
           <span>告警列表</span>
         </el-menu-item>
+        <el-menu-item index="/metric-data">
+          <el-icon><DataLine /></el-icon>
+          <span>数据上报</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -86,7 +90,8 @@ const titleMap = {
   '/parse-rules': '解析规则管理',
   '/alarm-rules': '告警规则管理',
   '/offline-rules': '离线规则管理',
-  '/alarms': '告警列表'
+  '/alarms': '告警列表',
+  '/metric-data': '报文详情'
 }
 
 // 页面标题

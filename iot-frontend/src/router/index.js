@@ -42,6 +42,12 @@ const routes = [
     meta: { title: '离线规则管理' }
   },
   {
+    path: '/metric-data',
+    name: 'MetricData',
+    component: () => import('@/views/MetricData.vue'),
+    meta: { title: '数据上报' }
+  },
+  {
     path: '/alarms',
     name: 'Alarms',
     component: () => import('@/views/Alarms.vue'),

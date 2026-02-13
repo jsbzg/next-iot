@@ -1,19 +1,19 @@
 package com.nextiot.flink.function;
 
 import com.alibaba.fastjson2.JSON;
-import com.alibaba.fastjson2.JSONObject;
 import com.nextiot.common.entity.*;
+import com.nextiot.common.enums.AlarmLevel;
 import com.nextiot.common.enums.ConfigChangeType;
 import com.nextiot.common.enums.ConfigOpType;
 import com.nextiot.common.enums.TriggerType;
 import com.nextiot.common.util.AviatorUtil;
-import com.nextiot.flink.state.BroadcastStateKeys;
-import org.apache.flink.api.common.state.ReadOnlyBroadcastState;
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.api.java.tuple.Tuple3;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.co.KeyedBroadcastProcessFunction;
@@ -45,15 +45,31 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
     // 非法设备数据侧输出
     public static final OutputTag<String> DIRTY_DATA_OUTPUT = new OutputTag<String>("dirty-data") {};
 
-    // 可替换点：当前使用 ValueState，后续可使用 Redis 实现分布式状态
+    // ========== Broadcast State 描述符（MapStateDescriptor）==========
+    // 设备状态：key=deviceCode, value=ThingDevice
+    public static final MapStateDescriptor<String, ThingDevice> DEVICE_STATE_DESC =
+            new MapStateDescriptor<>("device-state", Types.STRING, TypeInformation.of(ThingDevice.class));
 
+    // 解析规则状态：key=gatewayType:version, value=ParseRule
+    public static final MapStateDescriptor<String, ParseRule> PARSE_RULE_STATE_DESC =
+            new MapStateDescriptor<>("parse-rule-state", Types.STRING, TypeInformation.of(ParseRule.class));
+
+    // 告警规则状态：key=ruleCode, value=AlarmRule
+    public static final MapStateDescriptor<String, AlarmRule> ALARM_RULE_STATE_DESC =
+            new MapStateDescriptor<>("alarm-rule-state", Types.STRING, TypeInformation.of(AlarmRule.class));
+
+    // 离线规则状态：key=deviceCode, value=OfflineRule
+    public static final MapStateDescriptor<String, OfflineRule> OFFLINE_RULE_STATE_DESC =
+            new MapStateDescriptor<>("offline-rule-state", Types.STRING, TypeInformation.of(OfflineRule.class));
+
+    // ========== Keyed State ==========
     // 连续触发次数状态
     private ValueState<Integer> continuousCountState;
 
-    // 触发历史记录状态（用于窗口判断）
-    private ValueState<Tuple2<Long, Double>> triggerHistoryState;
+    // 窗口内触发时间列表状态
+    private ListState<Long> windowTriggerTimesState;
 
-    // 流内抑制状态
+    // 流内抑制状态（最后一次告警触发时间）
     private ValueState<Long> suppressState;
 
     // 设备最后上报时间状态
@@ -63,25 +79,17 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
 
-        // 初始化连续触发次数状态
-        ValueStateDescriptor<Integer> continuousDesc = new ValueStateDescriptor<>(
-                "continuousCount", TypeInformation.of(Integer.class));
-        continuousCountState = getRuntimeContext().getState(continuousDesc);
+        continuousCountState = getRuntimeContext().getState(
+                new ValueStateDescriptor<>("continuousCount", Types.INT));
 
-        // 初始化触发历史记录状态
-        ValueStateDescriptor<Tuple2<Long, Double>> historyDesc = new ValueStateDescriptor<>(
-                "triggerHistory", TypeInformation.of(Tuple2.class));
-        triggerHistoryState = getRuntimeContext().getState(historyDesc);
+        windowTriggerTimesState = getRuntimeContext().getListState(
+                new ListStateDescriptor<>("windowTriggerTimes", Types.LONG));
 
-        // 初始化流内抑制状态
-        ValueStateDescriptor<Long> suppressDesc = new ValueStateDescriptor<>(
-                "suppressTime", TypeInformation.of(Long.class));
-        suppressState = getRuntimeContext().getState(suppressDesc);
+        suppressState = getRuntimeContext().getState(
+                new ValueStateDescriptor<>("suppressTime", Types.LONG));
 
-        // 初始化设备最后上报时间状态
-        ValueStateDescriptor<Long> lastSeenDesc = new ValueStateDescriptor<>(
-                "lastSeenTime", TypeInformation.of(Long.class));
-        lastSeenTimeState = getRuntimeContext().getState(lastSeenDesc);
+        lastSeenTimeState = getRuntimeContext().getState(
+                new ValueStateDescriptor<>("lastSeenTime", Types.LONG));
     }
 
     /**
@@ -93,55 +101,49 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
             ReadOnlyContext ctx,
             Collector<Tuple4<MetricData, AlarmEvent, AlarmEvent, String>> out) throws Exception {
 
-        // 当前时间戳
         long now = System.currentTimeMillis();
         String deviceCode = String.valueOf(raw.get("deviceCode"));
+        log.info("[PARSER-DEBUG] >>> 收到原始数据: deviceCode={}, raw={}", deviceCode, JSON.toJSONString(raw));
 
         // ===== Step 1: 动态解析 =====
-        // 获取解析规则（从 Broadcast State）
-        ParseRule parseRule = BroadcastStateKeys.getParseRule(ctx.getBroadcastState(parseRuleDesc), "MQTT");
+        String gatewayType = raw.get("gatewayType") != null ? String.valueOf(raw.get("gatewayType")) : "MQTT";
+        ParseRule parseRule = findLatestParseRule(ctx, gatewayType);
         if (parseRule == null) {
-            // 可扩展：支持多种网关类型
-            log.warn("未找到解析规则: deviceCode={}", deviceCode);
+            log.warn("[PARSER-DEBUG] !!! [Step 1] 未找到解析规则: gatewayType={}", gatewayType);
             return;
         }
 
-        // 解析为标准 MetricData 格式
         MetricData metricData = parseRawData(raw, parseRule);
         if (metricData == null) {
-            // 解析失败，Side Output
+            log.warn("[PARSER-DEBUG] !!! [Step 1] 数据解析失败或被 matchExpr 过滤: raw={}", JSON.toJSONString(raw));
             ctx.output(DIRTY_DATA_OUTPUT, "解析失败: " + JSON.toJSONString(raw));
             return;
         }
+        log.info("[PARSER-DEBUG] >>> [Step 1] 解析成功: metric={}", JSON.toJSONString(metricData));
 
         // ===== Step 2: 设备合法性校验（第一道业务闸门）=====
-        // 这是 Flink 中的**第一道业务闸门**
-        ThingDevice device = BroadcastStateKeys.getDevice(ctx.getBroadcastState(deviceDesc), deviceCode);
+        ThingDevice device = ctx.getBroadcastState(DEVICE_STATE_DESC).get(deviceCode);
         if (device == null) {
-            // 非法设备 / 未注册 / 已删除
+            log.warn("[PARSER-DEBUG] !!! [Step 2] 非法设备(未注册): deviceCode={}", deviceCode);
             String dirtyMsg = String.format("非法设备数据: deviceCode=%s, raw=%s",
                     deviceCode, JSON.toJSONString(raw));
-            log.warn(dirtyMsg);
             ctx.output(DIRTY_DATA_OUTPUT, dirtyMsg);
-            // 严禁进入后续流程
             return;
         }
+        log.info("[PARSER-DEBUG] >>> [Step 2] 设备校验通过: {}", deviceCode);
 
         // 更新设备最后上报时间
         lastSeenTimeState.update(now);
 
         // ===== Step 3: 设备离线检测设置 =====
-        // 获取离线规则
-        OfflineRule offlineRule = BroadcastStateKeys.getOfflineRule(ctx.getBroadcastState(offlineRuleDesc), deviceCode);
+        OfflineRule offlineRule = ctx.getBroadcastState(OFFLINE_RULE_STATE_DESC).get(deviceCode);
         if (offlineRule != null && offlineRule.getEnabled()) {
-            // 注册定时器检测离线
             long offlineTriggerTime = now + offlineRule.getTimeoutSeconds() * 1000L;
             ctx.timerService().registerProcessingTimeTimer(offlineTriggerTime);
         }
 
         // ===== Step 4: 告警规则检测 =====
-        // 获取匹配该设备的告警规则
-        Collection<AlarmRule> rules = getMatchAlarmRules(ctx.getBroadcastState(alarmRuleDesc), deviceCode, metricData.getPropertyCode());
+        Collection<AlarmRule> rules = getMatchAlarmRules(ctx, deviceCode, metricData.getPropertyCode());
 
         AlarmEvent alarmEvent = null;
         for (AlarmRule rule : rules) {
@@ -149,16 +151,17 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
                 continue;
             }
 
-            // 条件判断
+            // 条件判断（Aviator 表达式）
             Map<String, Object> env = new HashMap<>();
             env.put("value", metricData.getValue());
             boolean matched = AviatorUtil.evalBoolean(rule.getConditionExpr(), env);
 
             if (matched) {
-                // ===== Step 4.1: 触发类型判断（连续N次 / 窗口）=====
+                // ===== Step 4.1: 触发类型判断 =====
                 boolean shouldTrigger = false;
+                String triggerType = rule.getTriggerType();
 
-                if (rule.getTriggerType() == TriggerType.CONTINUOUS_N) {
+                if (TriggerType.CONTINUOUS_N.getCode().equals(triggerType)) {
                     // 连续 N 次判断
                     Integer count = continuousCountState.value();
                     if (count == null) {
@@ -169,38 +172,37 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
 
                     if (count >= rule.getTriggerN()) {
                         shouldTrigger = true;
-                        continuousCountState.clear(); // 触发后清空
+                        continuousCountState.clear();
                     }
-                } else if (rule.getTriggerType() == TriggerType.WINDOW) {
+                } else if (TriggerType.WINDOW.getCode().equals(triggerType)) {
                     // 窗口判断：统计窗口内的触发次数
-                    Tuple2<Long, Double> history = triggerHistoryState.value();
-                    List<Tuple2<Long, Double>> triggerTimes = new ArrayList<>();
-                    if (history != null && (now - history.f0 <= rule.getWindowSeconds() * 1000L)) {
-                        triggerTimes.add(history);
+                    long windowMs = rule.getWindowSeconds() * 1000L;
+                    List<Long> validTimes = new ArrayList<>();
+
+                    for (Long ts : windowTriggerTimesState.get()) {
+                        if (now - ts <= windowMs) {
+                            validTimes.add(ts);
+                        }
                     }
+                    validTimes.add(now);
 
-                    triggerTimes.add(Tuple2.of(now, metricData.getValue()));
-
-                    if (triggerTimes.size() >= rule.getTriggerN()) {
+                    if (validTimes.size() >= rule.getTriggerN()) {
                         shouldTrigger = true;
-                        triggerTimes.clear();
+                        validTimes.clear();
                     }
 
-                    // 保存最后一条记录
-                    if (!triggerTimes.isEmpty()) {
-                        triggerHistoryState.update(triggerTimes.get(triggerTimes.size() - 1));
-                    } else {
-                        triggerHistoryState.clear();
+                    // 更新状态
+                    windowTriggerTimesState.clear();
+                    for (Long ts : validTimes) {
+                        windowTriggerTimesState.add(ts);
                     }
                 }
 
                 // ===== Step 4.2: 流内抑制（防止刷屏）=====
                 if (shouldTrigger) {
-                    String suppressKey = deviceCode + ":" + rule.getRuleCode();
                     Long lastTriggerTime = suppressState.value();
 
                     if (lastTriggerTime != null && now - lastTriggerTime < rule.getSuppressSeconds() * 1000L) {
-                        // 在抑制时间内，不输出
                         log.debug("告警被抑制: ruleCode={}, deviceCode={}", rule.getRuleCode(), deviceCode);
                         continue;
                     }
@@ -260,12 +262,9 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
         Long lastSeen = lastSeenTimeState.value();
         long now = System.currentTimeMillis();
 
-        // 获取离线规则
-        OfflineRule offlineRule = BroadcastStateKeys.getOfflineRule(ctx.getBroadcastState(offlineRuleDesc), deviceCode);
+        OfflineRule offlineRule = ctx.getBroadcastState(OFFLINE_RULE_STATE_DESC).get(deviceCode);
         if (offlineRule != null && offlineRule.getEnabled() && lastSeen != null) {
-            // 判断是否超时
             if (now - lastSeen >= offlineRule.getTimeoutSeconds() * 1000L) {
-                // 触发离线告警
                 AlarmEvent offlineEvent = AlarmEvent.createOfflineEvent(offlineRule, deviceCode, now);
                 out.collect(Tuple4.of(null, null, offlineEvent, deviceCode));
                 log.info("设备离线告警: deviceCode={}, offlineSeconds={}", deviceCode, offlineRule.getTimeoutSeconds());
@@ -273,60 +272,112 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
         }
     }
 
-    /**
-     * 订阅的 Broadcast State 描述符
-     */
-    public static final ValueStateDescriptor<ThingDevice> deviceDesc =
-            new ValueStateDescriptor<>("device-state", ThingDevice.class);
-
-    public static final ValueStateDescriptor<ParseRule> parseRuleDesc =
-            new ValueStateDescriptor<>("parse-rule-state", ParseRule.class);
-
-    public static final ValueStateDescriptor<AlarmRule> alarmRuleDesc =
-            new ValueStateDescriptor<>("alarm-rule-state", AlarmRule.class);
-
-    public static final ValueStateDescriptor<OfflineRule> offlineRuleDesc =
-            new ValueStateDescriptor<>("offline-rule-state", OfflineRule.class);
-
     // ========== 私有辅助方法 ==========
+
+    /**
+     * 查找最新版本的解析规则
+     */
+    private ParseRule findLatestParseRule(ReadOnlyContext ctx, String gatewayType) throws Exception {
+        String keyPrefix = gatewayType + ":";
+        int maxVersion = 0;
+        ParseRule latest = null;
+
+        for (Map.Entry<String, ParseRule> entry : ctx.getBroadcastState(PARSE_RULE_STATE_DESC).immutableEntries()) {
+            String key = entry.getKey();
+            if (key.startsWith(keyPrefix)) {
+                String versionStr = key.substring(keyPrefix.length());
+                try {
+                    int version = Integer.parseInt(versionStr);
+                    if (version > maxVersion) {
+                        maxVersion = version;
+                        latest = entry.getValue();
+                    }
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return latest;
+    }
 
     /**
      * 解析原始报文为标准格式
      */
     private MetricData parseRawData(Map<String, Object> raw, ParseRule parseRule) {
         try {
-            // Demo 简化：假设原始报文已经是标准格式
-            Object deviceCodeObj = raw.get("deviceCode");
-            if (deviceCodeObj == null) {
-                return null;
-            }
-            String deviceCode = String.valueOf(deviceCodeObj);
+            // 1. 动态脚本模式 (优先)
+            if (parseRule.getParseScript() != null && !parseRule.getParseScript().isBlank()) {
+                log.info("[PARSER-DEBUG] ---------------------------------------------");
+                log.info("[PARSER-DEBUG] 规则检测开始: 规则ID={}, GatewayType={}, Version={}", 
+                        parseRule.getId(), parseRule.getGatewayType(), parseRule.getVersion());
 
-            // 提取点位数据 (temperature / humidity / pressure)
-            MetricData metric = new MetricData();
-            metric.setDeviceCode(deviceCode);
+                // 1.1 匹配表达式校验
+                Map<String, Object> env = new HashMap<>(raw);
+                env.put("raw", raw); 
 
-            // 简化的提取逻辑，实际应使用 parseRule 的 mappingScript
-            for (Map.Entry<String, Object> entry : raw.entrySet()) {
-                String key = entry.getKey();
-                Object value = entry.getValue();
-
-                if ("temperature".equals(key) || "humidity".equals(key) || "pressure".equals(key)) {
-                    metric.setPropertyCode(key);
-                    if (value instanceof Number) {
-                        metric.setValue(((Number) value).doubleValue());
+                if (parseRule.getMatchExpr() != null && !parseRule.getMatchExpr().isBlank()) {
+                    boolean matched = AviatorUtil.evalBoolean(parseRule.getMatchExpr(), env);
+                    log.info("[PARSER-DEBUG] matchExpr: [{}], result: {}", parseRule.getMatchExpr(), matched);
+                    if (!matched) {
+                        return null; // 不匹配则忽略
                     }
-                    metric.setStrValue(String.valueOf(value));
-                    break;
                 }
+
+                // 1.2 执行解析脚本: Raw -> Parsed
+                Object parsedObj = AviatorUtil.eval(parseRule.getParseScript(), env);
+                if (!(parsedObj instanceof Map)) {
+                    log.warn("[PARSER-DEBUG] !!! 解析脚本返回了非 Map 对象: {}", parsedObj);
+                    return null;
+                }
+                Map<String, Object> data = (Map<String, Object>) parsedObj;
+                log.info("[PARSER-DEBUG] parseScript 结果: {}", JSON.toJSONString(data));
+
+                // 1.3 执行映射脚本: Parsed -> Mapped (可选)
+                if (parseRule.getMappingScript() != null && !parseRule.getMappingScript().isBlank()) {
+                     Map<String, Object> mapEnv = new HashMap<>(data); 
+                     mapEnv.put("raw", raw);
+                     mapEnv.put("parsed", data); 
+                     
+                     Object mappedObj = AviatorUtil.eval(parseRule.getMappingScript(), mapEnv);
+                     if (mappedObj instanceof Map) {
+                         data = (Map<String, Object>) mappedObj;
+                         log.info("[PARSER-DEBUG] mappingScript 结果: {}", JSON.toJSONString(data));
+                     }
+                }
+                
+                // 1.4 转换为 MetricData 标准格式
+                if (data == null || data.isEmpty()) {
+                    log.warn("[PARSER-DEBUG] !!! 最终数据为空");
+                    return null;
+                }
+                
+                String deviceCode = String.valueOf(data.get("deviceCode"));
+                if (deviceCode == null || "null".equals(deviceCode)) {
+                    log.warn("[PARSER-DEBUG] !!! 结果缺少 deviceCode: {}", data);
+                    return null;
+                }
+
+                MetricData metric = new MetricData();
+                metric.setDeviceCode(deviceCode);
+                metric.setPropertyCode(String.valueOf(data.get("propertyCode")));
+                
+                Object val = data.get("value");
+                if (val instanceof Number) {
+                    metric.setValue(((Number) val).doubleValue());
+                }
+                metric.setStrValue(String.valueOf(val));
+                
+                Object ts = data.get("ts");
+                metric.setTs(ts != null && !"null".equals(String.valueOf(ts)) ? Long.parseLong(String.valueOf(ts)) : System.currentTimeMillis());
+                
+                log.info("[PARSER-DEBUG] >>> 最终解析成功: {}", JSON.toJSONString(metric));
+                return metric;
             }
 
-            Object tsObj = raw.get("ts");
-            metric.setTs(tsObj != null ? Long.parseLong(String.valueOf(tsObj)) : System.currentTimeMillis());
-
-            return metric;
+            // 2. 若未配置脚本，视为无法解析 (纯配置驱动)
+            log.debug("未配置解析脚本，忽略报文: ruleId={}", parseRule.getId());
+            return null;
         } catch (Exception e) {
-            log.error("解析报文失败: {}", raw, e);
+            log.error("解析报文失败: rule={}, raw={}", parseRule.getId(), raw, e);
             return null;
         }
     }
@@ -335,19 +386,15 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
      * 获取匹配设备的告警规则
      */
     private Collection<AlarmRule> getMatchAlarmRules(
-            ReadOnlyBroadcastState<String, AlarmRule> state,
+            ReadOnlyContext ctx,
             String deviceCode,
             String propertyCode) throws Exception {
 
         List<AlarmRule> matchedRules = new ArrayList<>();
 
-        // 遍历所有告警规则，筛选出符合条件的规则
-        for (String key : state.immutableEntries().keySet()) {
-            AlarmRule rule = state.get(key);
+        for (Map.Entry<String, AlarmRule> entry : ctx.getBroadcastState(ALARM_RULE_STATE_DESC).immutableEntries()) {
+            AlarmRule rule = entry.getValue();
             if (rule != null && rule.getEnabled()) {
-                // 规则匹配逻辑：
-                // 1. 点位编码匹配
-                // 2. 设备编码匹配或规则未指定设备（按模型规则）
                 if (propertyCode.equals(rule.getPropertyCode()) &&
                     (deviceCode.equals(rule.getDeviceCode()) || rule.getDeviceCode() == null || rule.getDeviceCode().isEmpty())) {
                     matchedRules.add(rule);
@@ -368,7 +415,8 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
         event.setPropertyCode(metric.getPropertyCode());
         event.setValue(metric.getValue());
         event.setStrValue(metric.getStrValue());
-        event.setLevel(rule.getLevel());
+        // AlarmRule.level 是 Integer，AlarmEvent.level 是 AlarmLevel 枚举
+        event.setLevel(AlarmLevel.fromLevel(rule.getLevel()));
         event.setDescription(rule.getDescription());
         event.setTs(ts);
         return event;
@@ -380,9 +428,11 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
     private void handleDeviceChange(ConfigChangeEvent event, Context ctx) throws Exception {
         ThingDevice device = JSON.parseObject(JSON.toJSONString(event.getPayload()), ThingDevice.class);
         if (event.getOp() == ConfigOpType.DELETE) {
-            BroadcastStateKeys.deleteDevice(ctx.getBroadcastState(deviceDesc), device.getDeviceCode());
+            ctx.getBroadcastState(DEVICE_STATE_DESC).remove(device.getDeviceCode());
+            log.info("设备已删除: {}", device.getDeviceCode());
         } else {
-            BroadcastStateKeys.updateDevice(ctx.getBroadcastState(deviceDesc), device);
+            ctx.getBroadcastState(DEVICE_STATE_DESC).put(device.getDeviceCode(), device);
+            log.info("设备已更新: {}", device.getDeviceCode());
         }
     }
 
@@ -391,7 +441,14 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
      */
     private void handleParseRuleChange(ConfigChangeEvent event, Context ctx) throws Exception {
         ParseRule rule = JSON.parseObject(JSON.toJSONString(event.getPayload()), ParseRule.class);
-        BroadcastStateKeys.updateParseRule(ctx.getBroadcastState(parseRuleDesc), rule);
+        String key = rule.getGatewayType() + ":" + rule.getVersion();
+        if (event.getOp() == ConfigOpType.DELETE) {
+            ctx.getBroadcastState(PARSE_RULE_STATE_DESC).remove(key);
+            log.info("解析规则已删除: {}", key);
+        } else {
+            ctx.getBroadcastState(PARSE_RULE_STATE_DESC).put(key, rule);
+            log.info("解析规则已更新: {}", key);
+        }
     }
 
     /**
@@ -400,9 +457,11 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
     private void handleAlarmRuleChange(ConfigChangeEvent event, Context ctx) throws Exception {
         AlarmRule rule = JSON.parseObject(JSON.toJSONString(event.getPayload()), AlarmRule.class);
         if (event.getOp() == ConfigOpType.DELETE) {
-            BroadcastStateKeys.deleteAlarmRule(ctx.getBroadcastState(alarmRuleDesc), rule.getRuleCode());
+            ctx.getBroadcastState(ALARM_RULE_STATE_DESC).remove(rule.getRuleCode());
+            log.info("告警规则已删除: {}", rule.getRuleCode());
         } else {
-            BroadcastStateKeys.updateAlarmRule(ctx.getBroadcastState(alarmRuleDesc), rule);
+            ctx.getBroadcastState(ALARM_RULE_STATE_DESC).put(rule.getRuleCode(), rule);
+            log.info("告警规则已更新: {}", rule.getRuleCode());
         }
     }
 
@@ -412,9 +471,11 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
     private void handleOfflineRuleChange(ConfigChangeEvent event, Context ctx) throws Exception {
         OfflineRule rule = JSON.parseObject(JSON.toJSONString(event.getPayload()), OfflineRule.class);
         if (event.getOp() == ConfigOpType.DELETE) {
-            BroadcastStateKeys.deleteOfflineRule(ctx.getBroadcastState(offlineRuleDesc), rule.getDeviceCode());
+            ctx.getBroadcastState(OFFLINE_RULE_STATE_DESC).remove(rule.getDeviceCode());
+            log.info("离线规则已删除: {}", rule.getDeviceCode());
         } else {
-            BroadcastStateKeys.updateOfflineRule(ctx.getBroadcastState(offlineRuleDesc), rule);
+            ctx.getBroadcastState(OFFLINE_RULE_STATE_DESC).put(rule.getDeviceCode(), rule);
+            log.info("离线规则已更新: {}", rule.getDeviceCode());
         }
     }
 }

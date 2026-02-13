@@ -7,14 +7,14 @@
 
     <parent>
         <groupId>com.nextiot</groupId>
-        <artifactId>iot-data-platform</artifactId>
+        <artifactId>next-iot-platform</artifactId>
         <version>1.0.0</version>
     </parent>
 
     <artifactId>iot-flink-job</artifactId>
     <packaging>jar</packaging>
 
-    <name>IoT Flink Job</name>
+    <name>iot-flink-job</name>
     <description>Flink 实时流处理 Job - 解析、检测、抑制、离线检测</description>
 
     <dependencies>
