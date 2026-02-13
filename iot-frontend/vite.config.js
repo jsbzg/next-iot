@@ -35,6 +35,10 @@ export default defineConfig({
       '/api/alarm': {
         target: 'http://localhost:8086',
         changeOrigin: true
+      },
+      '/api/metric-data': {
+        target: 'http://localhost:8086',
+        changeOrigin: true
       }
     }
   }

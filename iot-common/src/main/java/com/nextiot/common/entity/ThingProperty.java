@@ -27,7 +27,7 @@ public class ThingProperty {
     /**
      * 数据类型
      */
-    private DataType dataType;
+    private String dataType;
     /**
      * 单位
      */

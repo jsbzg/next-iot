@@ -26,21 +26,21 @@ public class MetricDataController {
     public Result<Page<DeviceMetricData>> page(
             @RequestParam(defaultValue = "1") Integer current,
             @RequestParam(defaultValue = "10") Integer size,
-            @RequestParam(required = false) String deviceCode,
-            @RequestParam(required = false) String propertyCode) {
-        
+            @RequestParam(name = "deviceCode", required = false) String deviceCode,
+            @RequestParam(name = "propertyCode", required = false) String propertyCode) {
+
         Page<DeviceMetricData> page = new Page<>(current, size);
         LambdaQueryWrapper<DeviceMetricData> wrapper = new LambdaQueryWrapper<>();
-        
+
         if (deviceCode != null && !deviceCode.isEmpty()) {
             wrapper.eq(DeviceMetricData::getDeviceCode, deviceCode);
         }
         if (propertyCode != null && !propertyCode.isEmpty()) {
             wrapper.eq(DeviceMetricData::getPropertyCode, propertyCode);
         }
-        
+
         wrapper.orderByDesc(DeviceMetricData::getTs);
-        
+
         return Result.success(deviceMetricDataService.page(page, wrapper));
     }
 }
