@@ -31,7 +31,7 @@ public class AlarmEvent {
     /**
      * 告警级别
      */
-    private AlarmLevel level;
+    private Integer level;
     /**
      * 告警描述
      */

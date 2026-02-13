@@ -12,6 +12,7 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple4;
+import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
@@ -39,7 +40,7 @@ public class IotFlinkJob {
         
         // 解析命令行参数
         // 例如: --bootstrap.servers kafka:29092 --parallelism 2
-        org.apache.flink.api.java.utils.ParameterTool params = org.apache.flink.api.java.utils.ParameterTool.fromArgs(args);
+        ParameterTool params = ParameterTool.fromArgs(args);
         
         // 获取配置，提供默认值
         String bootstrapServers = params.get("bootstrap.servers", "kafka:29092");
@@ -48,6 +49,8 @@ public class IotFlinkJob {
         String configTopic = params.get("config.topic", "config-topic");
         String alarmTopic = params.get("alarm.topic", "alarm-event-topic");
         String groupId = params.get("group.id", "iot-flink-group");
+        //解析后数据输出
+        String metricTopic = params.get("metric.topic", "metric-topic");
 
         env.setParallelism(parallelism);
         
@@ -60,7 +63,7 @@ public class IotFlinkJob {
                 .setBootstrapServers(bootstrapServers)
                 .setTopics(rawTopic)
                 .setGroupId(groupId)
-                .setStartingOffsets(OffsetsInitializer.earliest())
+                .setStartingOffsets(OffsetsInitializer.latest())
                 .setValueOnlyDeserializer(new SimpleStringSchema())
                 .build();
 
@@ -78,13 +81,13 @@ public class IotFlinkJob {
                 .setBootstrapServers(bootstrapServers)
                 .setTopics(configTopic)
                 .setGroupId(groupId + "-config")
-                .setStartingOffsets(OffsetsInitializer.earliest()) // 配置变更需要从头读取
+                .setStartingOffsets(OffsetsInitializer.latest()) // 配置变更需要最新的读取
                 .setValueOnlyDeserializer(new SimpleStringSchema())
                 .build();
 
         DataStream<ConfigChangeEvent> configStream = env
                 .fromSource(configSource, WatermarkStrategy.noWatermarks(), "Config Source")
-                .map(json -> com.alibaba.fastjson2.JSON.parseObject(json, ConfigChangeEvent.class));
+                .map(json -> JSON.parseObject(json, ConfigChangeEvent.class));
 
         // 3. 构建 Broadcast Stream
         BroadcastStream<ConfigChangeEvent> broadcastStream = configStream.broadcast(
@@ -106,11 +109,6 @@ public class IotFlinkJob {
         processedStream.getSideOutput(IotDataProcessFunction.DIRTY_DATA_OUTPUT)
                 .print("DIRTY");
 
-        // 5. 分流与 Sink
-        // 5.1 侧输出脏数据
-        processedStream.getSideOutput(IotDataProcessFunction.DIRTY_DATA_OUTPUT)
-                .print("DIRTY");
-
         // 5.2 业务指标数据 Sink (Metric Topic)
         DataStream<String> metricStream = processedStream
                 .flatMap((FlatMapFunction<Tuple4<MetricData, AlarmEvent, AlarmEvent, String>, String>) (value, out) -> {
@@ -123,7 +121,7 @@ public class IotFlinkJob {
         KafkaSink<String> metricSink = KafkaSink.<String>builder()
                 .setBootstrapServers(bootstrapServers)
                 .setRecordSerializer(KafkaRecordSerializationSchema.builder()
-                        .setTopic(params.get("metric.topic", "metric-topic"))
+                        .setTopic(metricTopic)
                         .setValueSerializationSchema(new SimpleStringSchema())
                         .build()
                 )
