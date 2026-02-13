@@ -49,7 +49,7 @@ public class AlarmEvent {
         event.setRuleCode("OFFLINE_" + deviceCode);
         event.setDeviceCode(deviceCode);
         event.setValue(0.0);
-        event.setLevel(AlarmLevel.WARNING);
+        event.setLevel(1);
         event.setDescription("设备离线超时：" + rule.getTimeoutSeconds() + "秒");
         event.setTs(ts);
         return event;
