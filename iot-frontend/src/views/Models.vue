@@ -17,14 +17,14 @@
     <!-- 物模型列表 -->
     <el-card class="table-card" shadow="never">
       <el-table :data="tableData" v-loading="loading" border stripe>
-        <el-table-column prop="modelCode" label="模型编码" width="150" />
-        <el-table-column prop="modelName" label="模型名称" width="200" />
-        <el-table-column label="创建时间" width="180">
+        <el-table-column prop="modelCode" label="模型编码" min-width="150" />
+        <el-table-column prop="modelName" label="模型名称" min-width="200" />
+        <el-table-column label="创建时间" min-width="180">
           <template #default="{ row }">
             {{ formatDate(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" min-width="280" align="center">
           <template #default="{ row }">
             <el-button type="primary" link :icon="View" @click="handleViewProperties(row)">查看点位</el-button>
             <el-button type="primary" link :icon="Plus" @click="handleAddProperty(row)">新增点位</el-button>

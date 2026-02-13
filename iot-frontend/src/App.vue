@@ -2,8 +2,7 @@
   <el-container class="layout-container">
     <el-aside width="240px" class="sidebar">
       <div class="logo">
-        <el-icon><DataLine /></el-icon>
-        <span>IoT 数据中台</span>
+        <span>Next-IoT 数据中台</span>
       </div>
       <el-menu
         :default-active="activeMenu"
@@ -119,10 +118,11 @@ const refreshData = () => {
 }
 
 .logo {
+  padding-left: 20px;
   height: 60px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: left;
   color: #fff;
   font-size: 18px;
   font-weight: bold;
@@ -164,5 +164,8 @@ const refreshData = () => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+.el-menu{
+  border-right: none !important;
 }
 </style>

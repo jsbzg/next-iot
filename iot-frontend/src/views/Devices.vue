@@ -20,29 +20,29 @@
     <!-- 设备列表 -->
     <el-card class="table-card" shadow="never">
       <el-table :data="tableData" v-loading="loading" border stripe>
-        <el-table-column prop="deviceCode" label="设备编码" width="150" />
-        <el-table-column prop="deviceName" label="设备名称" width="180" />
-        <el-table-column prop="modelCode" label="物模型" width="120" />
-        <el-table-column prop="gatewayType" label="网关类型" width="100">
+        <el-table-column prop="deviceCode" label="设备编码" min-width="150" />
+        <el-table-column prop="deviceName" label="设备名称" min-width="180" />
+        <el-table-column prop="modelCode" label="物模型" min-width="120" />
+        <el-table-column prop="gatewayType" label="网关类型" min-width="100">
           <template #default="{ row }">
             <el-tag :type="getGatewayTypeTag(row.gatewayType)">
               {{ row.gatewayType }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="online" label="状态" width="100" align="center">
+        <el-table-column prop="online" label="状态" min-width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="row.online ? 'success' : 'danger'">
               {{ row.online ? '在线' : '离线' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="lastSeenTs" label="最后上报时间" width="180">
+        <el-table-column prop="lastSeenTs" label="最后上报时间" min-width="180">
           <template #default="{ row }">
             {{ row.lastSeenTs ? formatDate(row.lastSeenTs) : '-' }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" min-width="120" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link :icon="Edit" @click="handleEdit(row)">编辑</el-button>
             <el-button type="danger" link :icon="Delete" @click="handleDelete(row)">删除</el-button>

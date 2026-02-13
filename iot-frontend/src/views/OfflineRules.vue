@@ -8,25 +8,25 @@
     <!-- 离线规则列表 -->
     <el-card class="table-card" shadow="never">
       <el-table :data="tableData" v-loading="loading" border stripe>
-        <el-table-column prop="deviceCode" label="设备编码" width="180" />
-        <el-table-column prop="timeoutSeconds" label="超时时长" width="150">
+        <el-table-column prop="deviceCode" label="设备编码" min-width="180" />
+        <el-table-column prop="timeoutSeconds" label="超时时长" min-width="150">
           <template #default="{ row }">
             {{ row.timeoutSeconds }} 秒 ({{ Math.floor(row.timeoutSeconds / 60) }}分钟)
           </template>
         </el-table-column>
-        <el-table-column prop="enabled" label="状态" width="100" align="center">
+        <el-table-column prop="enabled" label="状态" min-width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="row.enabled ? 'success' : 'danger'">
               {{ row.enabled ? '启用' : '禁用' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="180">
+        <el-table-column label="创建时间" min-width="180">
           <template #default="{ row }">
             {{ formatDate(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160">
+        <el-table-column label="操作" min-width="120">
           <template #default="{ row }">
             <el-button type="primary" link :icon="Edit" @click="handleEdit(row)">编辑</el-button>
             <el-button type="danger" link :icon="Delete" @click="handleDelete(row)">删除</el-button>
