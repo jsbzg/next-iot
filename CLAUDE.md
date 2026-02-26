@@ -1,6 +1,32 @@
-# 一、目标与边界
+# CLAUDE.md
 
-## 1.1 目标
+## 一、项目定位与目标
+
+本项目是一个 **IoT 物联网平台**，采用 **Spring Cloud + Vue** 技术栈，目标是构建：
+
+- 可水平扩展的后端微服务体系
+- 支持高并发设备接入与数据处理
+- 前后端分离、工程化、可持续演进
+- 适合中大型团队协作与长期维护
+
+Claude 在本项目中充当 **高级工程协作助手**，辅助但不替代工程师决策。
+
+---
+
+## 二、语言与输出规范（强制）
+
+1. 所有回答 **必须使用简体中文**
+2. 不使用中英混排（代码、类名、库名除外）
+3. 输出内容优先工程可落地，而非概念性描述
+4. 不输出与当前问题无关的内容
+
+---
+
+## 三、项目约束
+
+### 3.1、目标与边界
+
+#### 3.1.1 目标
 
 构建一个 IoT 数据中台 Demo，满足：
 
@@ -23,7 +49,7 @@
    - 通过 Kafka `config-topic` **动态下发**
    - Flink 使用 **Broadcast State 实时生效**
 
-## 1.2 非目标（Demo 简化）
+#### 3.1.2 非目标（Demo 简化）
 
 - 不做 Flink / Kafka / MySQL 高可用
 - 不做多机房、多集群
@@ -31,7 +57,7 @@
 
 ------
 
-# 二、总体架构
+### 3.2、总体架构
 
 ```less
 [ 网关设备 ]
@@ -75,25 +101,32 @@
 
 ------
 
-# 三、核心设计原则
+### 3.3、核心设计原则
 
-1. **Flink = 智能水龙头**
+1. **架构核心理念：String-First**
+
+   - 所有原始报文保持 String 格式
+   - 格式判断、字段提取、类型转换、数组展开等逻辑 **完全由 AviatorScript 动态配置完成**
+   - Flink 负责执行脚本，不预先解析结构
+
+2. **Flink = 智能水龙头**
+
    - 必须：
-     - 报文解析
+     - 报文解析（基于 AviatorScript，支持任意格式）
      - 设备合法性校验
      - 做告警检测（连续 N 次、窗口判断）
      - 做流内抑制（防刷屏、时间窗口去重）
      - 离线检测
    - 目标：**不让脏数据、不合规设备、不受控告警洪水进入下游**
-   
-2. **Alarm Service = 用水管家**
-   
+
+3. **Alarm Service = 用水管家**
+
    - 只做：
      - 业务策略抑制（维护窗口、静默策略）
      - 生命周期管理（ACTIVE / ACK / RECOVERED）
      - 通知编排（短信 / 邮件 / Webhook）
-   
-3. **所有规则 + 设备主数据必须支持动态刷新**
+
+4. **所有规则 + 设备主数据必须支持动态刷新**
 
    - 改配置：
      - 不允许重启 Flink
@@ -102,22 +135,14 @@
      - Kafka config-topic 广播
      - Flink Broadcast State 实时更新
 
-4. **设备合法性过滤是数据入口的第一道业务闸门**
+5. **设备合法性过滤是数据入口的第一道业务闸门**
 
-   - 位置：
-
-     > Flink 中，“解析完成之后、检测之前”
-
-   - 目标：
-
-     - 防止污染：
-       - Flink State
-       - 指标流
-       - 告警流
+   - 位置：Flink 中，「解析完成之后、检测之前」
+   - 目标：防止污染 Flink State、指标流、告警流
 
 ------
 
-# 四、数据模型设计（MySQL）
+### 3.4、数据模型设计（MySQL）
 
 > ⚠️ Demo 阶段用 MySQL
 > ⚠️ 后续可替换：
@@ -125,7 +150,7 @@
 > - 状态类表 → Redis
 > - 时序数据 → ClickHouse / TDengine / InfluxDB
 
-## 4.1 物模型（thing_model）
+#### 3.4.1 物模型（thing_model）
 
 ```sql
 thing_model(
@@ -135,7 +160,7 @@ thing_model(
 )
 ```
 
-## 4.2 点位定义（thing_property）
+#### 3.4.2 点位定义（thing_property）
 
 ```sql
 thing_property(
@@ -148,7 +173,7 @@ thing_property(
 )
 ```
 
-## 4.3 设备实例（thing_device，作为“设备白名单主数据”）
+#### 3.4.3 设备实例（thing_device，作为“设备白名单主数据”）
 
 ```sql
 thing_device(
@@ -159,7 +184,7 @@ thing_device(
 )
 ```
 
-## 4.4 解析规则（parse_rule）
+#### 3.4.4 解析规则（parse_rule）
 
 ```sql
 parse_rule(
@@ -168,13 +193,41 @@ parse_rule(
   protocol_type,       -- mqtt/http/tcp
   match_expr,          -- Aviator: 判断是否命中该规则
   parse_script,        -- Aviator: 从原始报文提取字段
-  mapping_script,      -- Aviator: 映射为 {deviceCode, propertyCode, value, ts}
+  mapping_script,      -- Aviator: 映射为标准格式（可选）
+  parse_mode,          -- 解析模式：STRING（新） / LEGACY（旧）
+  key_extractor_script, -- Key 提取脚本（可选，用于优化 keyBy）
+  parser_type,         -- 解析器类型：JSON/CSV/PIPE/FIXED_WIDTH/HEX/CUSTOM
+  sample_input,        -- 示例输入（用于规则调试）
+  validation_regex,    -- 验证正则表达式（可选）
   version,
-  updated_at
+  enabled
 )
 ```
 
-## 4.5 告警规则（alarm_rule）
+**支持的报文格式（通过 AviatorScript 配置）**：
+
+| 格式类型 | 示例输入 | parser_type | 典型脚本 |
+|---------|---------|-------------|---------|
+| JSON 对象 | `{"deviceCode":"dev001","temperature":26.5}` | JSON | `m.deviceCode = rawMap.deviceCode; m.value = rawMap.temperature; return m;` |
+| JSON 数组 | `[{"deviceCode":"dev001","temp":26.5},...]` | JSON | `for item in rawMap { m.deviceCode = item.deviceCode; ... }` |
+| CSV | `dev_001,1771913823,26.7,44.8,1011.2` | CSV | `let fields = split(rawMessage, ','); m.value = double(fields[2]);` |
+| 管道符 | `dev_001\|1771913823\|26.7` | PIPE | `let parts = split(rawMessage, '\|'); m.value = double(parts[2]);` |
+| 固定长度 | `dev0012025010126.700448.8` | FIXED_WIDTH | `m.deviceCode = substring(rawMessage, 0, 7); m.temp = substring(rawMessage, 15, 22);` |
+| Modbus Hex | `$DEV001,26.5*4A` | HEX | `let checksum = hex_to_int(substring(rawMessage, starIndex+1, -1));` |
+
+**AviatorScript 自定义函数**：
+
+| 函数 | 说明 | 示例 |
+|-----|------|-----|
+| `split(str, delimiter)` | 字符串分割 | `split("a,b,c", ",")` → `["a", "b", "c"]` |
+| `substring(str, start, end)` | 子串提取 | `substring("hello", 1, 4)` → `"ell"` |
+| `length(str)` | 字符串长度 | `length("hello")` → `5` |
+| `index_of(str, sub)` | 查找子串索引 | `index_of("hello", "ll")` → `2` |
+| `hex_to_int(hex)` | 十六进制转整数 | `hex_to_int("4A")` → `74` |
+| `byte_at(str, idx)` | 获取字节值 | `byte_at("AB", 0)` → `65` |
+| `replace(str, target, repl)` | 字符串替换 | `replace("hello", "l", "L")` → `"heLLo"` |
+
+#### 3.4.5 告警规则（alarm_rule）
 
 ```sql
 alarm_rule(
@@ -191,7 +244,7 @@ alarm_rule(
 )
 ```
 
-## 4.6 离线规则（offline_rule）
+#### 3.4.6 离线规则（offline_rule）
 
 ```sql
 offline_rule(
@@ -205,15 +258,15 @@ offline_rule(
 
 ------
 
-# 五、Kafka 设计
+### 3.5、Kafka 设计
 
-| Topic               | 作用                                           |
-| ------------------- | ---------------------------------------------- |
-| raw-topic           | 原始网关报文                                   |
-| metric-topic        | Flink 输出的标准化点位数据                     |
-| alarm-event-topic   | Flink 输出的“已检测 + 已流内抑制”的告警事件    |
-| config-topic        | 配置变更事件（解析规则 / 告警规则 / 离线规则） |
-| dirty-topic（可选） | 非法设备 / 解析失败数据 SideOutput             |
+| Topic             | 作用                                           |
+| ----------------- | ---------------------------------------------- |
+| raw-topic         | 原始网关报文                                   |
+| metric-topic      | Flink 输出的标准化点位数据                     |
+| alarm-event-topic | Flink 输出的“已检测 + 已流内抑制”的告警事件    |
+| config-topic      | 配置变更事件（解析规则 / 告警规则 / 离线规则） |
+| dirty-topic       | 非法设备 / 解析失败数据 SideOutput             |
 
  配置变更事件（统一模型）:
 
@@ -227,50 +280,71 @@ offline_rule(
 
 ------
 
-# 六、Flink Job 设计（核心）
+### 3.6、Flink Job 设计（核心）
 
-## 6.1 输入流
+#### 3.6.1 输入流
 
-- 主流：`raw-topic`
+- 主流：`raw-topic`（原始 String 消息，包装为 `IntermediateRawMessage`）
 - 广播流：`config-topic`
 
-## 6.2 Broadcast State
+#### 3.6.2 Broadcast State
 
-- parseRuleState
-- alarmRuleState
-- offlineRuleState
+- deviceState: `MapState<String, ThingDevice>` - 设备白名单
+- parseRuleState: `MapState<String, ParseRule>` - 解析规则
+- alarmRuleState: `MapState<String, List<AlarmRule>>` - 告警规则
+- offlineRuleState: `MapState<String, OfflineRule>` - 离线规则
 
-结构示例：
-
-```java
-MapState<String, ParseRule>
-MapState<String, AlarmRule>
-MapState<String, OfflineRule>
-```
-
-Key是gatewayType + version
+结构示例：ParseRule 和 OfflineRule 的 key 为 `gatewayType` 或 `deviceCode`
 
 ------
 
-## 6.3 处理流程
+#### 3.6.3 处理流程
 
-### Step 1：动态解析
+##### Step 0：数据源包装
 
-- 使用：
-  - ParseRule（Broadcast State）
-  - AviatorScript
-- 输出：
+- 原始消息保持 String 格式，包装为 `IntermediateRawMessage`
+- `rawMessage`: 原始报文字符串
+- `gatewayType`: 根据 `extractGatewayType()` 方法判断（JSON/CSV/PIPE/FIXED_WIDTH 等）
 
-```json
-{
-  "deviceCode": "dev_001",
-  "propertyCode": "temperature",
-  "value": 85.3,
-  "ts": 1690000000
-}
+**Fallback Key 策略**：
+- 使用 `gatewayType + rawMessage.hashCode()` 作为 key
+- 优点：改动最小，不重构整个流架构，向后兼容性好
+
+-----
+
+##### Step 1：动态解析（基于 AviatorScript）
+
+**核心理念**：
+- 保持原始报文为 String
+- 所有格式判断、字段提取、类型转换由 AviatorScript 完成
+
+**处理流程**：
+1. 构建 Aviator 环境：
+   - `rawMessage`: 原始字符串
+   - `rawMap`: JSON 解析后的 Map（向后兼容）
+   - `now`: 当前时间戳
+2. 执行 `matchExpr`：判断是否匹配该解析规则
+3. 执行 `parseScript`：提取字段，返回 Map 或 List<Map>
+4. 执行 `mappingScript`（可选）：映射为标准格式
+5. 规范化为 `List<MetricData>`
+
+**AviatorScript 环境变量**：
+```javascript
+// 新模式：String-First
+rawMessage      // 原始报文字符串
+now             // 当前时间戳
+
+// 向后兼容：如果原始报文是 JSON，也会提供
+rawMap          // JSON 解析后的 Map
+raw             // 同 rawMap
+rawMap.field    // 扁平化字段（如 rawMap.deviceCode）
 ```
 
-### Step 2：设备合法性校验
+**AviatorScript 返回格式**：
+- 单个 Map：`{"deviceCode": "dev001", "propertyCode": "temperature", "value": 26.5, "ts": 1690000000}`
+- List<Map>：`[{"deviceCode": "dev001", ...}, {"deviceCode": "dev002", ...}]` ---
+
+##### Step 2：设备合法性校验
 
 - 使用：
   - BroadcastState<String, ThingDevice>
@@ -286,7 +360,7 @@ Key是gatewayType + version
 
 ------
 
-### Step 3：检测规则（必须在 Flink）
+##### Step 3：检测规则（必须在 Flink）
 
 - KeyBy(deviceCode + propertyCode)
 - 按 alarm_rule 执行：
@@ -302,7 +376,7 @@ Key是gatewayType + version
 
 ------
 
-### Step 4：流内抑制（必须在 Flink）
+##### Step 4：流内抑制（必须在 Flink）
 
 在触发告警前，执行：
 
@@ -315,7 +389,7 @@ Key是gatewayType + version
 
 > 防止 1 秒 100 条相同告警打爆下游
 
-### Step 5：离线检测（必须在 Flink）
+##### Step 5：离线检测（必须在 Flink）
 
 - KeyBy(deviceCode)
 - 维护：
@@ -327,7 +401,7 @@ Key是gatewayType + version
 
 ------
 
-### Step 4：输出告警事件
+##### Step 6：输出告警事件
 
 输出到 `alarm-event-topic`：
 
@@ -343,9 +417,9 @@ Key是gatewayType + version
 
 ------
 
-# 七、规则动态刷新机制
+### 3.7、规则动态刷新机制
 
-## 7.1 配置后台
+#### 3.7.1 配置后台
 
 当发生：
 - 新增 / 修改 / 删除：
@@ -361,7 +435,7 @@ Key是gatewayType + version
 
 ------
 
-## 7.2 Flink 侧
+#### 3.7.2 Flink 侧
 
 - config-topic 作为 Broadcast Stream
 - 在 `processBroadcastElement` 中：
@@ -374,9 +448,9 @@ Key是gatewayType + version
   - 实时读取最新Broadcast State
 - **无需重启 Flink Job**
 
-# 八、非法设备数据处理策略
+### 3.8、非法设备数据处理策略
 
-## 8.1 判定标准
+#### 3.8.1 判定标准
 
 - 解析完成后：
 
@@ -386,7 +460,7 @@ Key是gatewayType + version
 
     > 非法 / 未注册 / 已删除设备数据
 
-## 8.2 处理方式
+#### 3.8.2 处理方式
 
 - 推荐：
   - SideOutput 到 `dirty-topic`
@@ -396,7 +470,7 @@ Key是gatewayType + version
   - 进入抑制状态
   - 进入告警链路
 
-## 8.3 工程目的
+#### 3.8.3 工程目的
 
 - 防止：
   - Flink State 被污染
@@ -406,13 +480,13 @@ Key是gatewayType + version
 
 ------
 
-# 九、Alarm Service 设计
+### 3.9、Alarm Service 设计
 
-## 9.1 输入
+#### 3.9.1 输入
 
 - 消费 `alarm-event-topic`
 
-## 9.2 处理逻辑
+#### 3.9.2 处理逻辑
 
 只做：
 
@@ -427,7 +501,7 @@ Key是gatewayType + version
 3. 通知编排：
    - Webhook / 邮件 / 短信（Demo 可只打日志）
 
-## 9.3 存储（MySQL）
+#### 3.9.3 存储（MySQL）
 
 ```sql
 alarm_instance(
@@ -444,7 +518,7 @@ alarm_instance(
 
 ------
 
-# 九、前端功能（Demo）
+### 3.10、前端功能
 
 1. 物模型管理
 2. 设备管理
@@ -456,7 +530,7 @@ alarm_instance(
 
 ------
 
-# 十、技术栈约束
+### 3.11、技术栈约束
 
 - 后端：
   - JDK 17
@@ -472,7 +546,7 @@ alarm_instance(
 
 ------
 
-# 十一、关键可替换点（必须在代码中标注）
+### 3.12、关键可替换点（必须在代码中标注）
 
 1. **规则状态缓存**
    - 当前：MySQL + Flink State
@@ -486,7 +560,7 @@ alarm_instance(
 
 ------
 
-# 十二、模块划分
+### 3.13、模块划分
 
 ```
 iot-data-platform/
@@ -497,4 +571,33 @@ iot-data-platform/
 ├── iot-flink-job/               # Flink 实时解析 + 检测 + 抑制 Job
 └── iot-frontend/                # 前端管理页面（可选，或独立仓库）
 ```
+
+---
+
+## 四、Claude 的工作边界
+
+Claude 可以：
+- 生成代码模板
+- 设计模块结构
+- 优化现有实现
+- 分析性能与扩展性问题
+
+Claude 不可以：
+- 编造不存在的业务逻辑
+- 隐含修改既定架构决策
+- 无理由引入新技术栈
+
+---
+
+## 五、自动维护规则（重要）
+
+当用户提出以下请求时，Claude **可以建议更新本文件**：
+
+- 架构发生重大调整
+- 技术栈升级（如 Spring Boot / Vue 大版本）
+- 新增核心业务域（如规则引擎、告警中心）
+
+除非用户明确要求，Claude **不得自动修改本文件内容**。
+
+---
 

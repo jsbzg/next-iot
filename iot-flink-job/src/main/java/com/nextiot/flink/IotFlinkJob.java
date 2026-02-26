@@ -3,6 +3,7 @@ package com.nextiot.flink;
 import com.alibaba.fastjson2.JSON;
 import com.nextiot.common.entity.AlarmEvent;
 import com.nextiot.common.entity.ConfigChangeEvent;
+import com.nextiot.common.entity.IntermediateRawMessage;
 import com.nextiot.common.entity.MetricData;
 import com.nextiot.flink.function.IotDataProcessFunction;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
@@ -10,6 +11,7 @@ import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.common.typeinfo.TypeHint;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -29,6 +31,21 @@ import java.util.Map;
 
 /**
  * IoT 数据中台 Flink 处理作业
+ *
+ * 从「一条网关报文 = 一个设备一条指标」➡️ 升级为「一条网关报文 = 多设备 × 多属性」。
+ *
+ * 你给的样例：
+ *
+ * [
+ *   { "deviceCode": 123, "Ia": 2, "Ib": 3, "Ua": 2, "Uab": 120, "ts": 1672211233 },
+ *   { "deviceCode": 467, "Ia": 12, "Ib": 23, "Ua": 2, "Uab": 120, "ts": 1672211233 }
+ * ]
+ *
+ *
+ * 语义是：
+ *
+ * 一条 MQTT / Kafka 消息里，包含 N 个设备，每个设备 M 个属性
+ *
  */
 public class IotFlinkJob {
 
@@ -59,6 +76,7 @@ public class IotFlinkJob {
 
         // 2. 配置 Source
         // 2.1 原始数据流 (raw-topic)
+        // 保持原始消息为 String，所有格式判断、字段提取由 AviatorScript 完成
         KafkaSource<String> rawSource = KafkaSource.<String>builder()
                 .setBootstrapServers(bootstrapServers)
                 .setTopics(rawTopic)
@@ -67,14 +85,20 @@ public class IotFlinkJob {
                 .setValueOnlyDeserializer(new SimpleStringSchema())
                 .build();
 
-        DataStream<Map<String, Object>> rawStream = env
+        // 步骤1：将原始消息包装为 IntermediateRawMessage
+        DataStream<IntermediateRawMessage> rawStream = env
                 .fromSource(rawSource, WatermarkStrategy.noWatermarks(), "Raw Source")
-                .map((MapFunction<String, Map<String, Object>>) value -> {
-                    log.info("[SOURCE-DEBUG] >>> 收到原始 Kafka 消息: {}", value);
-                    return (Map<String, Object>) JSON.parseObject(value, Map.class);
+                .map(value -> {
+                    // 提取 gatewayType（优先从消息中，否则根据特征判断）
+                    String gatewayType = extractGatewayType(value);
+
+                    IntermediateRawMessage wrapper = new IntermediateRawMessage();
+                    wrapper.setRawMessage(value);
+                    wrapper.setGatewayType(gatewayType);
+                    wrapper.setReceiveTime(System.currentTimeMillis());
+                    return wrapper;
                 })
-                .returns(new TypeHint<Map<String, Object>>() {
-                }.getTypeInfo());
+                .returns(TypeInformation.of(IntermediateRawMessage.class));
 
         // 2.2 配置广播流 (config-topic)
         KafkaSource<String> configSource = KafkaSource.<String>builder()
@@ -99,8 +123,14 @@ public class IotFlinkJob {
 
         // 4. 连接流并处理
         // out: Tuple4<MetricData, AlarmEvent, AlarmEvent, String>
+        // 使用 Fallback Key 策略: gatewayType + rawMessage.hashCode()
         SingleOutputStreamOperator<Tuple4<MetricData, AlarmEvent, AlarmEvent, String>> processedStream = rawStream
-                .keyBy(map -> String.valueOf(map.get("deviceCode")))
+                .keyBy(msg -> {
+                    String gatewayType = msg.getGatewayType() != null ? msg.getGatewayType() : "DEFAULT";
+                    // 保证 hash 为正数，避免分区分配问题
+                    int hash = msg.getRawMessage().hashCode() & 0x7FFFFFFF;
+                    return gatewayType + "_" + hash;
+                })
                 .connect(broadcastStream)
                 .process(new IotDataProcessFunction());
 
@@ -154,5 +184,60 @@ public class IotFlinkJob {
         alarmStream.print("ALARM");
 
         env.execute("IoT Data Platform Job");
+    }
+
+    /**
+     * 提取 gatewayType
+     * 策略1：尝试 JSON 解析，提取 gatewayType 字段
+     * 策略2：根据消息特征判断格式类型
+     *
+     * @param rawMessage 原始消息字符串
+     * @return gatewayType
+     */
+    private static String extractGatewayType(String rawMessage) {
+        if (rawMessage == null || rawMessage.isEmpty()) {
+            return "UNKNOWN";
+        }
+
+        // 策略1：尝试 JSON 解析，提取 gatewayType 字段
+        try {
+            Map<String, Object> json = JSON.parseObject(rawMessage, Map.class);
+            Object gatewayType = json.get("gatewayType");
+            if (gatewayType != null) {
+                return String.valueOf(gatewayType);
+            }
+        } catch (Exception ignored) {
+            // 不是 JSON 格式，继续策略2
+        }
+
+        // 策略2：根据消息特征判断
+        String trimmed = rawMessage.trim();
+
+        // JSON 格式（对象或数组）
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            return "MQTT"; // JSON 格式默认 MQTT
+        }
+
+        // 管道分隔符格式
+        if (trimmed.contains("|")) {
+            return "PIPE_DELIMITED";
+        }
+
+        // CSV 逗号分隔符格式
+        if (trimmed.contains(",")) {
+            return "CSV";
+        }
+
+        // Modbus Hex 格式（以 $ 开头或包含字母数字组合）
+        if (trimmed.startsWith("$") || (trimmed.length() > 4 && trimmed.matches("[0-9A-Fa-f]+"))) {
+            return "MODBUS_HEX";
+        }
+
+        // 固定长度格式（无特殊分隔符，可能是固定格式）
+        if (trimmed.length() > 20 && !trimmed.contains(" ") && !trimmed.contains(",") && !trimmed.contains("|")) {
+            return "FIXED_WIDTH";
+        }
+
+        return "UNKNOWN";
     }
 }

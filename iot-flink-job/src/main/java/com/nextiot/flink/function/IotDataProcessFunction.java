@@ -23,17 +23,17 @@ import java.util.*;
  * IoT 数据中台核心处理函数
  * <p>
  * 功能：
- * 1. 动态解析（ParseRule + Aviator）
+ * 1. 动态解析（ParseRule + AviatorScript）- 支持 JSON/CSV/PIPE/固定长度等多种格式
  * 2. 设备合法性校验（ThingDevice 广播状态）- 不在库 → Side Output
  * 3. 动态检测规则（AlarmRule + Aviator）- 连续N次 / 窗口
  * 4. 流内抑制（State 防刷屏/窗口去重）
  * 5. 离线检测（OfflineRule + 定时器）
  */
 public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
-        String,                                                                 // Key
-        Map<String, Object>,                                                  // 主流：原始报文
-        ConfigChangeEvent,                                                     // 广播流：配置变更事件
-        Tuple4<MetricData, AlarmEvent, AlarmEvent, String>> {                 // 输出：(Metrics, AlarmEvent, OfflineEvent, DeviceCode)
+        String,                           // Key (gatewayType_hash)
+        IntermediateRawMessage,          // 主流：原始消息包装（保持 String）
+        ConfigChangeEvent,                // 广播流：配置变更事件
+        Tuple4<MetricData, AlarmEvent, AlarmEvent, String>> {  // 输出：(Metrics, AlarmEvent, OfflineEvent, DeviceCode)
 
     private static final Logger log = LoggerFactory.getLogger(IotDataProcessFunction.class);
 
@@ -99,128 +99,166 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
     }
 
     /**
-     * 处理主流：原始报文
+     * 处理主流：原始报文（包装在 IntermediateRawMessage 中）
      */
     @Override
     public void processElement(
-            Map<String, Object> raw,
+            IntermediateRawMessage msg,
             ReadOnlyContext ctx,
             Collector<Tuple4<MetricData, AlarmEvent, AlarmEvent, String>> out) throws Exception {
 
         long now = System.currentTimeMillis();
-        String deviceCode = String.valueOf(raw.get("deviceCode"));
-        log.info("[PARSER-DEBUG] >>> 收到原始数据: deviceCode={}, raw={}", deviceCode, JSON.toJSONString(raw));
+        String rawMessage = msg.getRawMessage();
+        String gatewayType = msg.getGatewayType();
+
+        log.info("[PARSER-DEBUG] >>> 收到原始消息: gatewayType={}, rawMessage={}", gatewayType, rawMessage);
+
+        // ===== Step 1: 获取解析规则 =====
+        ParseRule parseRule = ctx.getBroadcastState(PARSE_RULE_STATE_DESC).get(gatewayType);
+        if (parseRule == null) {
+            log.warn("[PARSER-DEBUG] !!! 未找到解析规则: gatewayType={}", gatewayType);
+            String dirtyMsg = String.format("未找到解析规则: gatewayType=%s, raw=%s",
+                    gatewayType, rawMessage);
+            ctx.output(DIRTY_DATA_OUTPUT, dirtyMsg);
+            return;
+        }
+
+        // 规则验证正则表达式（如果配置）
+        if (parseRule.getValidationRegex() != null && !parseRule.getValidationRegex().isBlank()) {
+            if (!rawMessage.matches(parseRule.getValidationRegex())) {
+                log.warn("[PARSER-DEBUG] !!! 验证正则不匹配: regex={}, raw={}", parseRule.getValidationRegex(), rawMessage);
+                ctx.output(DIRTY_DATA_OUTPUT, "验证正则不匹配: " + rawMessage);
+                return;
+            }
+        }
+
+        // ===== Step 2: 动态解析（支持返回 List<MetricData>）=====
+        List<MetricData> metrics = parseRawData(rawMessage, parseRule);
+        if (metrics.isEmpty()) {
+            log.warn("[PARSER-DEBUG] !!! 解析结果为空或被 matchExpr 过滤: raw={}", rawMessage);
+            ctx.output(DIRTY_DATA_OUTPUT, "解析失败: " + rawMessage);
+            return;
+        }
+
+        log.info("[PARSER-DEBUG] >>> 解析成功，产出 {} 条数据", metrics.size());
+
+        // ===== Step 3: 遍历每个 MetricData 进行处理 =====
+        for (MetricData metricData : metrics) {
+            processSingleMetric(metricData, ctx, out);
+        }
+    }
+
+    /**
+     * 处理单个 MetricData
+     */
+    private void processSingleMetric(
+            MetricData metricData,
+            ReadOnlyContext ctx,
+            Collector<Tuple4<MetricData, AlarmEvent, AlarmEvent, String>> out) throws Exception {
+
+        long now = System.currentTimeMillis();
+        String deviceCode = metricData.getDeviceCode();
+
+        log.info("[PARSER-DEBUG] >>> 处理指标: deviceCode={}, propertyCode={}, value={}",
+                deviceCode, metricData.getPropertyCode(), metricData.getValue());
 
         // ===== Step 1: 设备合法性校验（第一道业务闸门）=====
         ThingDevice device = ctx.getBroadcastState(DEVICE_STATE_DESC).get(deviceCode);
         if (device == null) {
-            log.warn("[PARSER-DEBUG] !!! [Step 2] 非法设备(未注册): deviceCode={}", deviceCode);
-            String dirtyMsg = String.format("非法设备数据: deviceCode=%s, raw=%s",
-                    deviceCode, JSON.toJSONString(raw));
+            log.warn("[PARSER-DEBUG] !!! 非法设备(未注册): deviceCode={}", deviceCode);
+            String dirtyMsg = String.format("非法设备数据: deviceCode=%s, metric=%s",
+                    deviceCode, JSON.toJSONString(metricData));
             ctx.output(DIRTY_DATA_OUTPUT, dirtyMsg);
             return;
         }
-        log.info("[PARSER-DEBUG] >>> [Step 2] 设备校验通过: {}", deviceCode);
-
-        // ===== Step 2: 动态解析 =====
-        String gatewayType = raw.get("gatewayType") != null ? String.valueOf(raw.get("gatewayType")) : "MQTT";
-        ParseRule parseRule = ctx.getBroadcastState(PARSE_RULE_STATE_DESC).get(gatewayType);
-        if (parseRule == null) {
-            ctx.output(DIRTY_DATA_OUTPUT, "未找到解析规则: " + gatewayType);
-            log.warn("[PARSER-DEBUG] !!! [Step 1] 未找到解析规则: gatewayType={}", gatewayType);
-            return;
-        }
-        MetricData metricData = parseRawData(raw, parseRule);
-        if (metricData == null) {
-            log.warn("[PARSER-DEBUG] !!! [Step 1] 数据解析失败或被 matchExpr 过滤: raw={}", JSON.toJSONString(raw));
-            ctx.output(DIRTY_DATA_OUTPUT, "解析失败: " + JSON.toJSONString(raw));
-            return;
-        }
-        log.info("[PARSER-DEBUG] >>> [Step 1] 解析成功: metric={}", JSON.toJSONString(metricData));
+        log.info("[PARSER-DEBUG] >>> 设备校验通过: {}", deviceCode);
 
         // 更新设备最后上报时间
         lastSeenTimeState.update(now);
 
-        // ===== Step 3: 设备离线检测设置 =====
+        // ===== Step 2: 设备离线检测设置 =====
         OfflineRule offlineRule = ctx.getBroadcastState(OFFLINE_RULE_STATE_DESC).get(deviceCode);
         if (offlineRule != null && offlineRule.getEnabled()) {
             long offlineTriggerTime = now + offlineRule.getTimeoutSeconds() * 1000L;
             Long registered = registeredOfflineTimerState.value();
-            //为每个设备只保留“最新的一次离线检测定时器”，避免随着数据上报频率无限堆 Timer。
+            // 为每个设备只保留"最新的一次离线检测定时器"，避免随着数据上报频率无限堆 Timer
             if (registered == null || offlineTriggerTime > registered) {
                 ctx.timerService().registerProcessingTimeTimer(offlineTriggerTime);
                 registeredOfflineTimerState.update(offlineTriggerTime);
             }
         }
 
-        // ===== Step 4: 告警规则检测 =====
+        // ===== Step 3: 告警规则检测 =====
         String propertyCode = metricData.getPropertyCode();
         List<AlarmRule> rules = ctx.getBroadcastState(ALARM_RULE_STATE_DESC).get(propertyCode);
         AlarmEvent alarmEvent = null;
-        for (AlarmRule rule : rules) {
-            if (!rule.getEnabled()) {
-                continue;
-            }
 
-            // 条件判断（Aviator 表达式）
-            Map<String, Object> env = new HashMap<>();
-            env.put("value", metricData.getValue());
-            boolean matched = AviatorUtil.evalBoolean(rule.getConditionExpr(), env);
-            if (!matched) {
-                continue;
-            }
-
-            // ===== Step 4.1: 触发类型判断 =====
-            boolean shouldTrigger = false;
-            String ruleCode = rule.getRuleCode();
-            String triggerType = rule.getTriggerType();
-            if (TriggerType.CONTINUOUS_N.getCode().equals(triggerType)) {
-                // 连续 N 次判断
-                Integer count = continuousCountState.get(ruleCode);
-                if (count == null) {
-                    count = 0;
-                }
-                count++;
-                if (count >= rule.getTriggerN()) {
-                    shouldTrigger = true;
-                    continuousCountState.remove(ruleCode);
-                } else {
-                    continuousCountState.put(ruleCode, count);
-                }
-            } else if (TriggerType.WINDOW.getCode().equals(triggerType)) {
-                // 窗口判断：统计窗口内的触发次数
-                long windowMs = rule.getWindowSeconds() * 1000L;
-                List<Long> times = windowTriggerTimesState.get(ruleCode);
-                if (times == null) times = new ArrayList<>();
-
-                List<Long> valid = new ArrayList<>();
-                for (Long ts : times) {
-                    if (now - ts <= windowMs) {
-                        valid.add(ts);
-                    }
-                }
-                valid.add(now);
-                if (valid.size() >= rule.getTriggerN()) {
-                    shouldTrigger = true;
-                    windowTriggerTimesState.remove(ruleCode);
-                } else {
-                    windowTriggerTimesState.put(ruleCode, valid);
-                }
-            }
-
-            // ===== Step 4.2: 流内抑制（防止刷屏）=====
-            if (shouldTrigger) {
-                Long lastTriggerTime = suppressState.get(ruleCode);
-                if (lastTriggerTime != null && now - lastTriggerTime < rule.getSuppressSeconds() * 1000L) {
-                    log.debug("告警被抑制: ruleCode={}, deviceCode={}", rule.getRuleCode(), deviceCode);
+        if (rules != null) {
+            for (AlarmRule rule : rules) {
+                if (!rule.getEnabled()) {
                     continue;
                 }
-                // 更新抑制时间
-                suppressState.put(ruleCode, now);
-                // 构造告警事件
-                alarmEvent = buildAlarmEvent(rule, deviceCode, metricData, now);
-            }
 
+                // 条件判断（Aviator 表达式）
+                Map<String, Object> env = new HashMap<>();
+                env.put("value", metricData.getValue());
+                boolean matched = AviatorUtil.evalBoolean(rule.getConditionExpr(), env);
+                if (!matched) {
+                    continue;
+                }
+
+                // ===== Step 3.1: 触发类型判断 =====
+                boolean shouldTrigger = false;
+                String ruleCode = rule.getRuleCode();
+                String triggerType = rule.getTriggerType();
+                if (TriggerType.CONTINUOUS_N.getCode().equals(triggerType)) {
+                    // 连续 N 次判断
+                    Integer count = continuousCountState.get(ruleCode);
+                    if (count == null) {
+                        count = 0;
+                    }
+                    count++;
+                    if (count >= rule.getTriggerN()) {
+                        shouldTrigger = true;
+                        continuousCountState.remove(ruleCode);
+                    } else {
+                        continuousCountState.put(ruleCode, count);
+                    }
+                } else if (TriggerType.WINDOW.getCode().equals(triggerType)) {
+                    // 窗口判断：统计窗口内的触发次数
+                    long windowMs = rule.getWindowSeconds() * 1000L;
+                    List<Long> times = windowTriggerTimesState.get(ruleCode);
+                    if (times == null) times = new ArrayList<>();
+
+                    List<Long> valid = new ArrayList<>();
+                    for (Long ts : times) {
+                        if (now - ts <= windowMs) {
+                            valid.add(ts);
+                        }
+                    }
+                    valid.add(now);
+                    if (valid.size() >= rule.getTriggerN()) {
+                        shouldTrigger = true;
+                        windowTriggerTimesState.remove(ruleCode);
+                    } else {
+                        windowTriggerTimesState.put(ruleCode, valid);
+                    }
+                }
+
+                // ===== Step 3.2: 流内抑制（防止刷屏）=====
+                if (shouldTrigger) {
+                    Long lastTriggerTime = suppressState.get(ruleCode);
+                    if (lastTriggerTime != null && now - lastTriggerTime < rule.getSuppressSeconds() * 1000L) {
+                        log.debug("告警被抑制: ruleCode={}, deviceCode={}", rule.getRuleCode(), deviceCode);
+                        continue;
+                    }
+                    // 更新抑制时间
+                    suppressState.put(ruleCode, now);
+                    // 构造告警事件
+                    alarmEvent = buildAlarmEvent(rule, deviceCode, metricData, now);
+                    break; // 同一规则只触发一次
+                }
+            }
         }
 
         // 输出结果：(MetricData, AlarmEvent, OfflineEvent, DeviceCode)
@@ -281,85 +319,187 @@ public class IotDataProcessFunction extends KeyedBroadcastProcessFunction<
 
     // ========== 私有辅助方法 ==========
 
-
     /**
      * 解析原始报文为标准格式
+     * 支持多种格式：JSON 对象/数组、CSV、PIPE、固定长度等
+     *
+     * @param rawMessage 原始消息字符串
+     * @param parseRule 解析规则
+     * @return 解析后的 MetricData 列表（可能为空）
      */
-    private MetricData parseRawData(Map<String, Object> raw, ParseRule parseRule) {
+    private List<MetricData> parseRawData(String rawMessage, ParseRule parseRule) {
         try {
-            // 1. 动态脚本模式 (优先)
-            if (StringUtils.isNotBlank(parseRule.getParseScript())) {
-                log.info("[PARSER-DEBUG] 规则检测开始: 规则ID={}, GatewayType={}, Version={}", parseRule.getId(), parseRule.getGatewayType(), parseRule.getVersion());
-                // 1.1 匹配表达式校验
-                Map<String, Object> env = new HashMap<>(raw);
-                env.put("raw", raw);
+            log.info("[PARSER-DEBUG] 规则检测开始: 规则ID={}, GatewayType={}, ParseMode={}",
+                    parseRule.getId(), parseRule.getGatewayType(), parseRule.getParseMode());
 
-                if (parseRule.getMatchExpr() != null && !parseRule.getMatchExpr().isBlank()) {
-                    boolean matched = AviatorUtil.evalBoolean(parseRule.getMatchExpr(), env);
-                    log.info("[PARSER-DEBUG] matchExpr: [{}], result: {}", parseRule.getMatchExpr(), matched);
-                    if (!matched) {
-                        return null; // 不匹配则忽略
-                    }
-                }
+            // Step 1: 构建 Aviator 环境
+            Map<String, Object> env = buildParseEnv(rawMessage);
 
-                // 1.2 执行解析脚本: Raw -> Parsed
-                Object parsedObj = AviatorUtil.eval(parseRule.getParseScript(), env);
-                if (!(parsedObj instanceof Map)) {
-                    log.warn("[PARSER-DEBUG] !!! 解析脚本返回了非 Map 对象: {}", parsedObj);
-                    return null;
-                }
-                Map<String, Object> data = (Map<String, Object>) parsedObj;
-                log.info("[PARSER-DEBUG] parseScript 结果: {}", JSON.toJSONString(data));
-
-                // 1.3 执行映射脚本: Parsed -> Mapped (可选)
-                if (StringUtils.isNotBlank(parseRule.getMappingScript())) {
-                    Map<String, Object> mapEnv = new HashMap<>(data);
-                    mapEnv.put("raw", raw);
-                    mapEnv.put("parsed", data);
-
-                    Object mappedObj = AviatorUtil.eval(parseRule.getMappingScript(), mapEnv);
-                    if (mappedObj instanceof Map) {
-                        data = (Map<String, Object>) mappedObj;
-                        log.info("[PARSER-DEBUG] mappingScript 结果: {}", JSON.toJSONString(data));
-                    }
-                }
-
-                // 1.4 转换为 MetricData 标准格式
-                if (data == null || data.isEmpty()) {
-                    log.warn("[PARSER-DEBUG] !!! 最终数据为空");
-                    return null;
-                }
-
-                String deviceCode = String.valueOf(data.get("deviceCode"));
-                if (deviceCode == null || "null".equals(deviceCode)) {
-                    log.warn("[PARSER-DEBUG] !!! 结果缺少 deviceCode: {}", data);
-                    return null;
-                }
-
-                MetricData metric = new MetricData();
-                metric.setDeviceCode(deviceCode);
-                metric.setPropertyCode(String.valueOf(data.get("propertyCode")));
-
-                Object val = data.get("value");
-                if (val instanceof Number) {
-                    metric.setValue(((Number) val).doubleValue());
-                }
-                metric.setStrValue(String.valueOf(val));
-
-                Object ts = data.get("ts");
-                metric.setTs(ts != null && !"null".equals(String.valueOf(ts)) ? Long.parseLong(String.valueOf(ts)) : System.currentTimeMillis());
-
-                log.info("[PARSER-DEBUG] >>> 最终解析成功: {}", JSON.toJSONString(metric));
-                return metric;
+            // Step 2: 执行 matchExpr
+            if (!checkMatchExpr(parseRule, env)) {
+                log.info("[PARSER-DEBUG] matchExpr 不匹配: [{}], rawMessage={}",
+                        parseRule.getMatchExpr(), rawMessage);
+                return Collections.emptyList();
             }
 
-            // 2. 若未配置脚本，视为无法解析 (纯配置驱动)
-            log.debug("未配置解析脚本，忽略报文: ruleId={}", parseRule.getId());
-            return null;
+            // Step 3: 执行 parseScript
+            Object parsed = AviatorUtil.eval(parseRule.getParseScript(), env);
+            if (parsed == null) {
+                log.warn("[PARSER-DEBUG] parseScript 返回 null");
+                return Collections.emptyList();
+            }
+
+            log.info("[PARSER-DEBUG] parseScript 返回类型: {}, value={}",
+                    parsed.getClass().getSimpleName(), JSON.toJSONString(parsed));
+
+            // Step 4: 执行 mappingScript（可选）
+            parsed = applyMappingScript(parsed, rawMessage, parseRule);
+
+            // Step 5: 规范化为 List<MetricData>
+            List<MetricData> metrics = normalizeToMetricDataList(parsed, parseRule);
+
+            log.info("[PARSER-DEBUG] >>> 规范化完成，产出 {} 条 MetricData", metrics.size());
+            for (MetricData m : metrics) {
+                log.info("[PARSER-DEBUG]   MetricData: {}", JSON.toJSONString(m));
+            }
+
+            return metrics;
+
         } catch (Exception e) {
-            log.error("解析报文失败: rule={}, raw={}", parseRule.getId(), raw, e);
+            log.error("[PARSER-DEBUG] 解析失败: rule={}, raw={}", parseRule.getId(), rawMessage, e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * 构建 Aviator 解析环境
+     * 提供 rawMessage 和向后兼容的 rawMap
+     */
+    private Map<String, Object> buildParseEnv(String rawMessage) {
+        Map<String, Object> env = new HashMap<>();
+        env.put("rawMessage", rawMessage);
+        env.put("now", System.currentTimeMillis());
+
+        // 尝试 JSON 解析（向后兼容旧脚本）
+        try {
+            Map<String, Object> rawMap = JSON.parseObject(rawMessage, Map.class);
+            env.put("rawMap", rawMap);
+            env.put("raw", rawMap); // Legacy support
+            // 扁平化字段，方便脚本直接访问（如 rawMap.deviceCode -> deviceCode）
+            env.putAll(rawMap);
+        } catch (Exception ignored) {
+            // 不是 JSON 格式，提供 null
+            env.put("rawMap", null);
+            env.put("raw", null);
+        }
+
+        return env;
+    }
+
+    /**
+     * 检查 matchExpr 是否匹配
+     */
+    private boolean checkMatchExpr(ParseRule parseRule, Map<String, Object> env) {
+        if (parseRule.getMatchExpr() == null || parseRule.getMatchExpr().isBlank()) {
+            return true; // 未配置 matchExpr，默认匹配
+        }
+        return AviatorUtil.evalBoolean(parseRule.getMatchExpr(), env);
+    }
+
+    /**
+     * 应用 mappingScript（可选）
+     */
+    private Object applyMappingScript(Object parsed, String rawMessage, ParseRule parseRule) {
+        if (parseRule.getMappingScript() == null || parseRule.getMappingScript().isBlank()) {
+            return parsed;
+        }
+
+        try {
+            Map<String, Object> mapEnv = new HashMap<>();
+            mapEnv.put("rawMessage", rawMessage);
+            mapEnv.put("parsed", parsed);
+            mapEnv.put("now", System.currentTimeMillis());
+
+            // 向后兼容：如果 parsed 是 Map，也放入环境
+            if (parsed instanceof Map) {
+                mapEnv.putAll((Map<String, Object>) parsed);
+            }
+
+            Object mapped = AviatorUtil.eval(parseRule.getMappingScript(), mapEnv);
+            return mapped != null ? mapped : parsed; // 如果返回 null，使用原始值
+        } catch (Exception e) {
+            log.warn("[PARSER-DEBUG] mappingScript 执行失败，使用原始值: {}", e.getMessage());
+            return parsed;
+        }
+    }
+
+    /**
+     * 将解析结果规范化为 List<MetricData>
+     * 支持输入类型：
+     * - Map: 单个 MetricData
+     * - List<Map>: 多个 MetricData
+     */
+    private List<MetricData> normalizeToMetricDataList(Object result, ParseRule parseRule) {
+        List<MetricData> metrics = new ArrayList<>();
+
+        if (result instanceof Map) {
+            // 单个 Map
+            MetricData metric = buildMetricData((Map<String, Object>) result);
+            if (metric != null) {
+                metrics.add(metric);
+            }
+        } else if (result instanceof List) {
+            // List<Map> 或 List<Object>
+            for (Object item : (List<?>) result) {
+                if (item instanceof Map) {
+                    MetricData metric = buildMetricData((Map<String, Object>) item);
+                    if (metric != null) {
+                        metrics.add(metric);
+                    }
+                }
+            }
+        }
+
+        return metrics;
+    }
+
+    /**
+     * 从 Map 构建 MetricData
+     */
+    private MetricData buildMetricData(Map<String, Object> data) {
+        if (data == null || data.isEmpty()) {
             return null;
         }
+
+        Object deviceCodeObj = data.get("deviceCode");
+        if (deviceCodeObj == null || "null".equals(String.valueOf(deviceCodeObj))) {
+            log.warn("[PARSER-DEBUG] !!! 结果缺少 deviceCode: {}", data);
+            return null;
+        }
+
+        String deviceCode = String.valueOf(deviceCodeObj);
+        Object propertyCodeObj = data.get("propertyCode");
+        if (propertyCodeObj == null || "null".equals(String.valueOf(propertyCodeObj))) {
+            log.warn("[PARSER-DEBUG] !!! 结果缺少 propertyCode: {}", data);
+            return null;
+        }
+
+        MetricData metric = new MetricData();
+        metric.setDeviceCode(deviceCode);
+        metric.setPropertyCode(String.valueOf(propertyCodeObj));
+
+        Object val = data.get("value");
+        if (val instanceof Number) {
+            metric.setValue(((Number) val).doubleValue());
+        }
+        metric.setStrValue(String.valueOf(val));
+
+        Object ts = data.get("ts");
+        metric.setTs(ts != null && !"null".equals(String.valueOf(ts))
+                ? Long.parseLong(String.valueOf(ts))
+                : System.currentTimeMillis());
+
+        return metric;
     }
 
     /**

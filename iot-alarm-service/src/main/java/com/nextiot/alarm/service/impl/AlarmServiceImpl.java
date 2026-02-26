@@ -31,7 +31,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmInstanceMapper, AlarmInst
         instance.setDeviceCode(event.getDeviceCode());
         instance.setPropertyCode(event.getPropertyCode());
         instance.setStatus("ACTIVE");
-        instance.setLevel(event.getLevel().getLevel());
+        instance.setLevel(event.getLevel());
         instance.setDescription(event.getDescription());
         instance.setFirstTriggerTime(event.getTs());
         instance.setLastTriggerTime(event.getTs());
@@ -61,7 +61,7 @@ public class AlarmServiceImpl extends ServiceImpl<AlarmInstanceMapper, AlarmInst
         // 如果已确认，重新激活
         if ("ACKED".equals(instance.getStatus()) || "RECOVERED".equals(instance.getStatus())) {
             instance.setStatus("ACTIVE");
-            instance.setLevel(event.getLevel().getLevel());
+            instance.setLevel(event.getLevel());
             instance.setDescription(event.getDescription());
         }
 

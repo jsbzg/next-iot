@@ -20,6 +20,25 @@ public class AviatorUtil {
     // 编译缓存
     private static final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
 
+    // 是否已注册自定义函数
+    private static volatile boolean customFunctionsRegistered = false;
+
+    // 静态初始化：注册自定义函数
+    static {
+        registerCustomFunctions();
+    }
+
+    /**
+     * 注册自定义函数
+     */
+    private static synchronized void registerCustomFunctions() {
+        if (!customFunctionsRegistered) {
+            AviatorCustomFunctions.registerAllFunctions();
+            customFunctionsRegistered = true;
+            log.info("Aviator 自定义函数注册成功");
+        }
+    }
+
     /**
      * 计算布尔表达式（用于规则匹配）
      * @param expression 表达式，如 "value > 80"

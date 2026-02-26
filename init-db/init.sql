@@ -45,20 +45,26 @@ CREATE TABLE IF NOT EXISTS thing_device (
     INDEX idx_gateway_type (gateway_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='设备实例表';
 
--- ===== 解析规则表 =====
+-- ===== 解析规则表 =====--
 CREATE TABLE IF NOT EXISTS parse_rule (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
     gateway_type VARCHAR(50) NOT NULL COMMENT '网关类型',
     protocol_type VARCHAR(20) NOT NULL COMMENT '协议类型：mqtt/http/tcp',
     match_expr TEXT COMMENT '匹配表达式（Aviator 表达式）',
     parse_script TEXT COMMENT '解析脚本（Aviator 脚本）',
-    mapping_script TEXT COMMENT '映射脚本（Aviator 脚本）',
+    mapping_script TEXT COMMENT '映射脚本（Aviator 脚本，可选）',
+    parse_mode VARCHAR(20) DEFAULT 'STRING' COMMENT '解析模式：STRING（新）/ LEGACY（旧）',
+    key_extractor_script TEXT COMMENT 'Key 提取脚本（可选，用于优化 keyBy）',
+    parser_type VARCHAR(20) COMMENT '解析器类型：JSON/CSV/PIPE/FIXED_WIDTH/HEX/CUSTOM',
+    sample_input TEXT COMMENT '示例输入（用于规则调试）',
+    validation_regex VARCHAR(500) COMMENT '验证正则表达式（可选）',
     version INT NOT NULL DEFAULT 1 COMMENT '版本号',
     enabled TINYINT(1) DEFAULT 1 COMMENT '是否启用：0-禁用 1-启用',
     created_at BIGINT NOT NULL DEFAULT 0 COMMENT '创建时间',
     updated_at BIGINT NOT NULL DEFAULT 0 COMMENT '更新时间',
     INDEX idx_gateway_type (gateway_type),
-    INDEX idx_version (version)
+    INDEX idx_version (version),
+    INDEX idx_parser_type (parser_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='解析规则表';
 
 -- ===== 告警规则表 =====
@@ -144,14 +150,50 @@ INSERT INTO thing_property (model_code, property_code, property_name, data_type,
 INSERT INTO thing_device (device_code, model_code, gateway_type, device_name, online, last_seen_ts) VALUES
 ('dev_001', 'SENSOR_TPH', 'MQTT', '1号车间温湿度传感器', 1, UNIX_TIMESTAMP() * 1000),
 ('dev_002', 'SENSOR_TPH', 'MQTT', '2号车间温湿度传感器', 1, UNIX_TIMESTAMP() * 1000),
-('dev_003', 'SENSOR_TPH', 'HTTP', '3号车间温湿度传感器', 1, UNIX_TIMESTAMP() * 1000);
+('dev_003', 'SENSOR_TPH', 'HTTP', '3号车间温湿度传感器', 1, UNIX_TIMESTAMP() * 1000),
+('dev_004', 'SENSOR_TPH', 'CSV', 'CSV格式设备', 1, UNIX_TIMESTAMP() * 1000),
+('dev_005', 'SENSOR_TPH', 'PIPE_DELIMITED', '管道符分隔设备', 1, UNIX_TIMESTAMP() * 1000);
 
--- 解析规则示例：MQTT 协议报文格式：{"deviceCode":"dev_001","temperature":25.5,humidity":60.2,"pressure":1013.2,"ts":1690000000}
-INSERT INTO parse_rule (gateway_type, protocol_type, match_expr, parse_script, mapping_script, version, enabled) VALUES
-('MQTT', 'mqtt', 'deviceCode != nil', 
-'let m = seq.map(); m.deviceCode = raw.deviceCode; m.ts = raw.ts; m.temperature = raw.temperature; m.humidity = raw.humidity; m.pressure = raw.pressure; return m;', 
-'let out = seq.map(); out.deviceCode = parsed.deviceCode; out.ts = parsed.ts; if(parsed.temperature!=nil){ out.propertyCode=''temperature''; out.value=parsed.temperature; }elsif(parsed.humidity!=nil){ out.propertyCode=''humidity''; out.value=parsed.humidity; }elsif(parsed.pressure!=nil){ out.propertyCode=''pressure''; out.value=parsed.pressure; } return out;', 
-2, 1);
+-- 解析规则示例：支持多种格式
+
+-- 示例1: MQTT JSON 格式（单设备单属性）- 输入: {"gatewayType":"MQTT","deviceCode":"dev_001","temperature":25.5,"ts":1690000000}
+INSERT INTO parse_rule (gateway_type, protocol_type, parser_type, match_expr, parse_script, mapping_script, sample_input, parse_mode, version, enabled) VALUES
+('MQTT', 'mqtt', 'JSON', 'deviceCode != nil',
+'let m = seq.map(); m.deviceCode = rawMap.deviceCode; m.propertyCode = ''temperature''; m.value = rawMap.temperature; m.ts = rawMap.ts; return m;',
+NULL,
+'{"gatewayType":"MQTT","deviceCode":"dev_001","temperature":25.5,"ts":1690000000}',
+'STRING',
+1, 1);
+
+-- 示例2: CSV 格式 - 输入: dev_004,1771913823000,26.5,55.2,1013.25
+INSERT INTO parse_rule (gateway_type, protocol_type, parser_type, match_expr, parse_script, mapping_script, sample_input, validation_regex, parse_mode, version, enabled) VALUES
+('CSV', 'tcp', 'CSV', 'length(split(rawMessage, '','')) >= 5',
+'let fields = split(rawMessage, '',''); let m = seq.map(); m.deviceCode = fields[0]; m.ts = long(fields[1]); m.value = double(fields[2]); return m;',
+'let out = seq.map(); out.deviceCode = parsed.deviceCode; out.propertyCode = ''temperature''; out.value = parsed.value; out.ts = parsed.ts; return out;',
+'dev_004,1771913823000,26.5,55.2,1013.25',
+'^[A-Za-z0-9_]+,\\d+,\\d+\\.\\d+',
+'STRING',
+1, 1);
+
+-- 示例3: 管道符分隔格式 - 输入: dev_005|1771913823|26.7
+INSERT INTO parse_rule (gateway_type, protocol_type, parser_type, match_expr, parse_script, mapping_script, sample_input, validation_regex, parse_mode, version, enabled) VALUES
+('PIPE_DELIMITED', 'tcp', 'PIPE', 'length(split(rawMessage, ''\\|'')) >= 3',
+'let parts = split(rawMessage, ''\\|''); let m = seq.map(); m.deviceCode = parts[0]; m.ts = long(parts[1]) * 1000; m.value = double(parts[2]); return m;',
+'let out = seq.map(); out.deviceCode = parsed.deviceCode; out.propertyCode = ''temperature''; out.value = parsed.value; out.ts = parsed.ts; return out;',
+'dev_005|1771913823|26.7',
+'^[A-Za-z0-9_]+\\|\\d+\\|\\d+\\.\\d+',
+'STRING',
+1, 1);
+
+-- 示例4: 固定长度格式 - 输入: dev003169000000026.50
+INSERT INTO parse_rule (gateway_type, protocol_type, parser_type, match_expr, parse_script, mapping_script, sample_input, validation_regex, parse_mode, version, enabled) VALUES
+('FIXED_WIDTH', 'tcp', 'FIXED_WIDTH', 'length(rawMessage) >= 24',
+'let m = seq.map(); m.deviceCode = substring(rawMessage, 0, 7); m.ts = long(substring(rawMessage, 7, 20)); m.value = double(substring(rawMessage, 20, 24)); return m;',
+'let out = seq.map(); out.deviceCode = parsed.deviceCode; out.propertyCode = ''temperature''; out.value = parsed.value; out.ts = parsed.ts; return out;',
+'dev003169000000026.50',
+'^[a-z0-9]+\\d{13}\\d+\\.\\d+',
+'STRING',
+1, 1);
 
 -- 告警规则示例
 INSERT INTO alarm_rule (rule_code, device_code, property_code, condition_expr, trigger_type, trigger_n, window_seconds, suppress_seconds, level, description, enabled) VALUES
